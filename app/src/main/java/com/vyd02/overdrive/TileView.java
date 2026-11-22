@@ -65,7 +65,7 @@ public class TileView extends View {
         super(c);
         this.scaleUp = scaleUp;
         d = c.getResources().getDisplayMetrics().density;
-        rad = 10 * d;
+        rad = 14 * d;
         setFocusable(true);
         setFocusableInTouchMode(true);
         setClickable(true);
@@ -73,7 +73,7 @@ public class TileView extends View {
         ring.setStrokeWidth(2.5f * d);
         glow.setStyle(Paint.Style.STROKE);
         text.setColor(Color.WHITE);
-        text.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        text.setTypeface(Ui.body(c, true));
         dim.setColor(Color.BLACK);
     }
 
@@ -101,6 +101,10 @@ public class TileView extends View {
     /** Spotlight card: always drawn bright, never dimmed. */
     public void setAlwaysLit() { focus = 1f; lit = true; invalidate(); }
     private boolean lit;
+
+    private boolean badge;
+    /** Small heart in the corner for pinned favorites. */
+    public void setBadge(boolean on) { badge = on; invalidate(); }
 
     public int getAccent() { return accent; }
 
@@ -232,7 +236,17 @@ public class TileView extends View {
             ring.setColor(Color.argb((int) (255 * focus), 255, 255, 255));
             c.drawRoundRect(r, rad, rad, ring);
         }
+        if (badge) {
+            float bx = r.right - 13 * d, by = r.top + 13 * d, s = 5.2f * d;
+            iconPaint.setColor(Color.argb(150, 0, 0, 0));
+            c.drawCircle(bx, by, 9 * d, iconPaint);
+            iconPaint.setColor(Color.WHITE);
+            Icons.draw(c, "pinned", bx, by + 0.5f * d, s, iconPaint, badgePath, badgeRect, d, 0f);
+            iconPaint.setStyle(Paint.Style.FILL);
+        }
     }
+    private final android.graphics.Path badgePath = new android.graphics.Path();
+    private final RectF badgeRect = new RectF();
 
     // ---------- helpers ----------
 

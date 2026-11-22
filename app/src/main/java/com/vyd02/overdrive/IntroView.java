@@ -48,7 +48,7 @@ public class IntroView extends View {
         chevGlow.setStrokeCap(Paint.Cap.ROUND);
         chevGlow.setStrokeJoin(Paint.Join.ROUND);
         letter.setColor(Color.WHITE);
-        letter.setTypeface(Typeface.create("sans-serif-black", Typeface.NORMAL));
+        letter.setTypeface(Ui.display(c, 700));
         letter.setTextAlign(Paint.Align.CENTER);
         ring.setStyle(Paint.Style.STROKE);
         setClickable(false);

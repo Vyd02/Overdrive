@@ -181,6 +181,53 @@ final class Icons {
                 r.set(cx - s * 0.55f, cy - s * 0.7f, cx + s * 0.35f, cy + s * 0.2f); c.drawArc(r, 180, 160, false, p);
                 r.set(cx + s * 0.15f, cy - s * 0.3f, cx + s, cy + s * 0.55f); c.drawArc(r, 270, 180, false, p);
                 break;
+            case "search":
+                c.drawCircle(cx - s * 0.15f, cy - s * 0.15f, s * 0.55f, p);
+                c.drawLine(cx + s * 0.25f, cy + s * 0.25f, cx + s * 0.75f, cy + s * 0.75f, p);
+                break;
+            case "play":
+                fill(p);
+                path.reset();
+                path.moveTo(cx - s * 0.45f, cy - s * 0.65f);
+                path.lineTo(cx + s * 0.65f, cy);
+                path.lineTo(cx - s * 0.45f, cy + s * 0.65f);
+                path.close();
+                c.drawPath(path, p);
+                break;
+            case "dots":
+                fill(p);
+                for (int i = -1; i <= 1; i++) c.drawCircle(cx + i * s * 0.55f, cy, s * 0.14f, p);
+                break;
+            case "pin":
+            case "pinned":
+                path.reset();
+                path.moveTo(cx, cy + s * 0.8f);
+                path.cubicTo(cx - s * 1.1f, cy - s * 0.05f, cx - s * 0.55f, cy - s * 0.95f, cx, cy - s * 0.42f);
+                path.cubicTo(cx + s * 0.55f, cy - s * 0.95f, cx + s * 1.1f, cy - s * 0.05f, cx, cy + s * 0.8f);
+                path.close();
+                if (name.equals("pinned")) fill(p);
+                c.drawPath(path, p);
+                break;
+            case "back":
+                c.drawLine(cx + s * 0.25f, cy - s * 0.55f, cx - s * 0.3f, cy, p);
+                c.drawLine(cx - s * 0.3f, cy, cx + s * 0.25f, cy + s * 0.55f, p);
+                break;
+            case "chevron":
+                c.drawLine(cx - s * 0.2f, cy - s * 0.5f, cx + s * 0.3f, cy, p);
+                c.drawLine(cx + s * 0.3f, cy, cx - s * 0.2f, cy + s * 0.5f, p);
+                break;
+            case "info":
+                c.drawCircle(cx, cy, s * 0.85f, p);
+                c.drawLine(cx, cy - s * 0.1f, cx, cy + s * 0.45f, p);
+                fill(p); c.drawCircle(cx, cy - s * 0.42f, s * 0.08f, p);
+                break;
+            case "home":
+                path.reset();
+                path.moveTo(cx - s * 0.8f, cy - s * 0.05f); path.lineTo(cx, cy - s * 0.8f); path.lineTo(cx + s * 0.8f, cy - s * 0.05f);
+                c.drawPath(path, p);
+                r.set(cx - s * 0.55f, cy - s * 0.25f, cx + s * 0.55f, cy + s * 0.75f);
+                c.drawRoundRect(r, s * 0.08f, s * 0.08f, p);
+                break;
             case "download":
                 c.drawLine(cx, cy - s * 0.8f, cx, cy + s * 0.3f, p);
                 c.drawLine(cx - s * 0.4f, cy - s * 0.1f, cx, cy + s * 0.3f, p);

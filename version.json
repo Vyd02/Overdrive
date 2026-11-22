@@ -1,6 +1,6 @@
 {
-  "versionCode": 10,
-  "versionName": "1.4.0",
-  "apk": "dist/Overdrive-10.apk",
-  "notes": "Locked to the TV's refresh rate like the system UI, no memory-cleanup hitches, much less GPU work. Smooth 60."
+  "versionCode": 11,
+  "versionName": "2.0.0",
+  "apk": "dist/Overdrive-11.apk",
+  "notes": "Overdrive 2.0: cinematic redesign. New look and typography, spotlight with action buttons, gliding focus light, zoom-into-app launches, search with on-screen keyboard, all-new two-pane Settings with live theme previews."
 }

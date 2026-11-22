@@ -5,18 +5,17 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.LinearGradient;
-import android.graphics.Outline;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.Shader;
-import android.graphics.Typeface;
 import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
@@ -32,13 +31,9 @@ import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
-import android.view.ViewOutlineProvider;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodManager;
 import android.view.animation.AccelerateInterpolator;
-import android.view.animation.DecelerateInterpolator;
-import android.view.animation.OvershootInterpolator;
-import android.view.animation.PathInterpolator;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
@@ -59,18 +54,14 @@ import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
+/**
+ * Overdrive's home screen: a cinematic spotlight on whatever you're focused on, with action
+ * buttons, rows of apps below, a gliding focus light, and a zoom into the app when you open it.
+ */
 public class MainActivity extends Activity {
 
     static final String EXTRA_INTRO = "intro";
-    private static final int C_TEXT = Color.WHITE;
-    private static final int C_SUB = Color.parseColor("#9AA6BF");
-    private static final int C_ACCENT = Color.parseColor("#3DA9FF");
     private static final String KEY_LAST_UPDATE_CHECK = "last_update_check";
-    private static final String KEY_THEME = "theme";
-    private static final String KEY_INTRO = "intro_on";
-    private static final String KEY_SAVER = "saver_minutes";
-    private static final int ROW_TOP_GAP = 14; // room for the focused tile to grow without being clipped
-    private static final PathInterpolator EASE = new PathInterpolator(0.2f, 0.8f, 0.2f, 1f);
 
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final ExecutorService io = Executors.newSingleThreadExecutor();
@@ -82,46 +73,55 @@ public class MainActivity extends Activity {
     // views
     private FrameLayout root;
     private ThemeView theme;
-    private LinearLayout content;
     private ImageView backA, backB;
     private boolean backAOn = true;
-    private TextView heroName, heroTag, heroMeta;
+    private LinearLayout content;
+    private TextView heroEyebrow, heroName, heroMeta;
     private TileView heroCard;
+    private Ui.Pill actOpen, actOptions, actPin;
+    private Ui.Pill dockSearch, dockSettings;
+    private View updateDot;
     private RowScroller scroll;
     private LinearLayout rowsBox;
-    private TextView clockTime, clockDate;
-    private String lastClock = "";
-    private TextView weatherIcon, weatherTemp, weatherPlace;
-    private FrameLayout gear;
-    private View updateDot;
+    private TextView clockTime, clockDate, weatherIcon, weatherTemp, weatherPlace;
     private FrameLayout overlay;
     private LinearLayout panel;
     private View scrim;
     private TextView banner;
     private IntroView intro;
     private SettingsHub hub;
+    private SearchOverlay search;
     private FrameLayout saver;
     private LinearLayout saverBox;
     private TextView saverTime, saverDate, saverWeather;
+    private FrameLayout launchLayer;
+    private View launchFade;
 
     // state
     private List<AppRepo.App> allApps = new ArrayList<>();
     private final Map<String, AppRepo.App> byPkg = new HashMap<>();
+    private Map<String, String> catCache = new HashMap<>();
+    private final Map<String, TileView> tileByKey = new HashMap<>();
     private String lastSignature = "";
     private boolean firstBuild = true;
-    private View focusBeforePanel;
+    private View focusBeforePanel, focusBeforeOverlay;
     private int panelFocusIndex;
-    private Runnable panelOnClose;
     private Updater.Release pendingRelease;
-    private int currentAccent = C_ACCENT;
+    private int currentAccent = Ui.ACCENT;
     private int lastDx, lastDy;
-    private String movingPkg;          // favorites move mode
+    private String movingPkg;
     private TileView movingTile;
     private long lastInteraction = System.currentTimeMillis();
     private String lastWeatherLine = "";
-    private final Map<String, TileView> tileByKey = new HashMap<>();
+    private String lastClock = "";
     private View litRow;
-    private Map<String, String> catCache = new HashMap<>();
+    private boolean launching;
+
+    // what the hero buttons act on
+    private Runnable heroOpen;
+    private AppRepo.App heroApp;
+    private TileView heroTile;
+    private String heroRowKey;
 
     // =====================================================================
     // Lifecycle
@@ -131,12 +131,14 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle b) {
         super.onCreate(b);
         getWindow().setFormat(PixelFormat.RGBA_8888);
+        getWindow().setBackgroundDrawable(null);
         repo = new AppRepo(this);
         cats = new Categories(this, repo.prefs());
         sound = new Sound(this, repo.prefs());
         d = getResources().getDisplayMetrics().density;
         buildUi();
         setContentView(root);
+        showSkeleton();
         reloadApps(true);
         startClock();
         refreshWeather();
@@ -144,8 +146,7 @@ public class MainActivity extends Activity {
         ui.postDelayed(saverCheck, 15000);
         if (repo.prefs().getBoolean(BootReceiver.KEY_OPEN_ON_START, true)) WakeService.start(this);
 
-        boolean introOn = repo.prefs().getBoolean(KEY_INTRO, true);
-        if (introOn) playIntro(); else content.setAlpha(1f);
+        if (repo.prefs().getBoolean(SettingsHub.K_INTRO, true)) playIntro(); else content.setAlpha(1f);
 
         IntentFilter f = new IntentFilter();
         f.addAction(Intent.ACTION_PACKAGE_ADDED);
@@ -174,11 +175,19 @@ public class MainActivity extends Activity {
         super.onResume();
         lastInteraction = System.currentTimeMillis();
         reloadApps(false);
+        if (launching) {
+            // coming back from an app: fade the zoom layer away and glide the home screen in
+            launching = false;
+            launchFade.animate().withLayer().alpha(0f).setDuration(320).withEndAction(() -> {
+                launchLayer.removeAllViews();
+                launchLayer.setVisibility(View.GONE);
+            }).start();
+        }
         if (!intro.isPlaying()) {
             content.setAlpha(0f);
             content.setScaleX(1.04f);
             content.setScaleY(1.04f);
-            content.animate().withLayer().alpha(1f).scaleX(1f).scaleY(1f).setDuration(380).setInterpolator(EASE).start();
+            content.animate().withLayer().alpha(1f).scaleX(1f).scaleY(1f).setDuration(420).setInterpolator(Ui.EASE_OUT).start();
         }
         ui.postDelayed(this::autoCheckUpdate, 2500);
     }
@@ -188,40 +197,26 @@ public class MainActivity extends Activity {
         super.onNewIntent(intent);
         if (overlay.getVisibility() == View.VISIBLE) closePanel(false);
         if (hub.isOpen()) closeSettings();
+        if (search.isOpen()) closeSearch();
         hideSaver();
         endMove();
-        if (intent.getBooleanExtra(EXTRA_INTRO, false) && repo.prefs().getBoolean(KEY_INTRO, true)) playIntro();
-        scroll.smoothScrollTo(0, 0);
+        if (intent.getBooleanExtra(EXTRA_INTRO, false) && repo.prefs().getBoolean(SettingsHub.K_INTRO, true)) playIntro();
+        scroll.scrollTo(0, 0);
         focusFirstTile();
     }
 
     // =====================================================================
-    // UI construction
+    // Building the screen
     // =====================================================================
 
     private int dp(float v) { return Math.round(v * d); }
-
-    /** TextView that fades without an extra offscreen render pass. */
-    static class FastText extends TextView {
-        FastText(Context c) { super(c); }
-        @Override public boolean hasOverlappingRendering() { return false; }
-    }
-
-    private TextView text(float sp, int color, String font, int style) {
-        TextView t = new FastText(this);
-        t.setTextSize(sp);
-        t.setTextColor(color);
-        t.setTypeface(Typeface.create(font, style));
-        t.setIncludeFontPadding(true); // full glyph height: nothing gets its top shaved off
-        return t;
-    }
 
     private void noClip(ViewGroup v) {
         v.setClipChildren(false);
         v.setClipToPadding(false);
     }
 
-    /** Vertical scroller that lets us decide where rows land (console-style snapping). */
+    /** Vertical scroller that lets us decide where rows land. */
     static class RowScroller extends ScrollView {
         RowScroller(Context c) { super(c); }
         @Override protected int computeScrollDeltaToGetChildRectOnScreen(Rect r) { return 0; }
@@ -235,69 +230,98 @@ public class MainActivity extends Activity {
         @Override public boolean executeKeyEvent(KeyEvent e) { return false; }
     }
 
+    /** One soft shade over the backdrop: darkens the bottom (rows) and the left (title). */
+    static class Shade extends View {
+        private final Paint v = new Paint(Paint.DITHER_FLAG), h = new Paint(Paint.DITHER_FLAG);
+        Shade(Context c) { super(c); }
+        @Override protected void onSizeChanged(int w, int hh, int ow, int oh) {
+            v.setShader(new LinearGradient(0, 0, 0, hh, new int[]{Color.argb(90, 0, 0, 0), Color.argb(30, 0, 0, 0),
+                    Color.argb(170, 4, 5, 10), Color.argb(235, 4, 5, 10)}, new float[]{0f, 0.3f, 0.62f, 1f}, Shader.TileMode.CLAMP));
+            h.setShader(new LinearGradient(0, 0, w * 0.6f, 0, new int[]{Color.argb(170, 4, 5, 10), 0}, null, Shader.TileMode.CLAMP));
+        }
+        @Override protected void onDraw(Canvas c) {
+            c.drawRect(0, 0, getWidth(), getHeight(), v);
+            c.drawRect(0, 0, getWidth() * 0.6f, getHeight(), h);
+        }
+    }
+
     private void buildUi() {
         root = new FrameLayout(this);
-        getWindow().setBackgroundDrawable(null); // the theme covers the whole screen: skip a full-screen fill every frame
 
-        theme = new ThemeView(this, repo.prefs().getString(KEY_THEME, "nebula"));
+        theme = new ThemeView(this, repo.prefs().getString(SettingsHub.K_THEME, "nebula"));
         root.addView(theme, new FrameLayout.LayoutParams(-1, -1));
 
-        // spotlight backdrop: soft enlarged art of the focused app, fading into the theme
         backA = backdrop();
         backB = backdrop();
-        root.addView(backA, new FrameLayout.LayoutParams(-1, dp(360)));
-        root.addView(backB, new FrameLayout.LayoutParams(-1, dp(360)));
-        View shade = new View(this); // single soft shade so the title stays readable over the backdrop
-        shade.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
-                new int[]{Color.argb(70, 0, 0, 0), Color.argb(120, 0, 0, 0), Color.argb(0, 0, 0, 0)}));
-        root.addView(shade, new FrameLayout.LayoutParams(-1, dp(360)));
-
+        root.addView(backA, new FrameLayout.LayoutParams(-1, -1));
+        root.addView(backB, new FrameLayout.LayoutParams(-1, -1));
+        root.addView(new Shade(this), new FrameLayout.LayoutParams(-1, -1));
 
         content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
-        content.setPadding(dp(48), dp(24), 0, 0);
+        content.setPadding(dp(56), dp(26), 0, 0);
         content.setAlpha(0f);
         noClip(content);
         root.addView(content, new FrameLayout.LayoutParams(-1, -1));
 
-        View top = buildTopBar();
-        LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(-1, dp(52));
-        tlp.rightMargin = dp(48);
-        content.addView(top, tlp);
-        content.addView(buildHero(), new LinearLayout.LayoutParams(-1, dp(150)));
+        LinearLayout.LayoutParams dl = new LinearLayout.LayoutParams(-1, dp(46));
+        dl.rightMargin = dp(48);
+        content.addView(buildDock(), dl);
+        content.addView(buildHero(), new LinearLayout.LayoutParams(-1, dp(214)));
 
         scroll = new RowScroller(this);
         scroll.setVerticalScrollBarEnabled(false);
         scroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
-        scroll.setSmoothScrollingEnabled(true);
-        // rows must be clipped to their own area, otherwise rows that scroll up slide under the title
         scroll.setClipChildren(true);
         scroll.setClipToPadding(true);
         content.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1f));
         rowsBox = new LinearLayout(this);
         rowsBox.setOrientation(LinearLayout.VERTICAL);
-        rowsBox.setPadding(0, dp(ROW_TOP_GAP), 0, dp(300));
+        rowsBox.setPadding(0, dp(ROW_GAP), 0, dp(320));
         noClip(rowsBox);
         scroll.addView(rowsBox, new ScrollView.LayoutParams(-1, -2));
 
         buildSaver();
 
-        hub = new SettingsHub(this, new SettingsHub.Host() {
-            @Override public void play(int snd) { sound.play(snd); }
-            @Override public void tileFocused(TileView t, String title, String sub, int accent) {
-                int[] loc = new int[2];
-                t.getLocationOnScreen(loc);
-                theme.focusAt((loc[0] + t.getWidth() / 2f) / Math.max(1, root.getWidth()),
-                        (loc[1] + t.getHeight() / 2f) / Math.max(1, root.getHeight()), lastDx, lastDy);
-                theme.setAccent(accent);
-                currentAccent = accent;
-                lastDx = 0; lastDy = 0;
+        search = new SearchOverlay(this, new SearchOverlay.Host() {
+            @Override public List<AppRepo.App> apps() { return visibleApps(); }
+            @Override public void launch(AppRepo.App a, TileView from) {
+                launchApp(from, repo.launchIntent(a.pkg), a.pkg);
+                search.hide(); // come back to the home screen, not the search box
+                content.setDescendantFocusability(ViewGroup.FOCUS_AFTER_DESCENDANTS);
             }
-            @Override public void openOverdrive(String which) { openOverdriveSetting(which); }
+            @Override public void play(int s) { sound.play(s); }
+            @Override public void focused(TileView t, int accent) { themeAt(t, accent); }
+        });
+        root.addView(search, new FrameLayout.LayoutParams(-1, -1));
+
+        hub = new SettingsHub(this, new SettingsHub.Host() {
+            @Override public void play(int s) { sound.play(s); }
+            @Override public void tileFocused(View v, int accent) { themeAt(v, accent); }
             @Override public void banner(String msg) { showBanner(msg); }
             @Override public void closeHub() { closeSettings(); }
+            @Override public SharedPreferences prefs() { return repo.prefs(); }
+            @Override public String themeId() { return theme.themeId(); }
+            @Override public void previewTheme(String id) { theme.setTheme(id); theme.setAccent(currentAccent); }
+            @Override public void commitTheme(String id) {
+                repo.prefs().edit().putString(SettingsHub.K_THEME, id).apply();
+                if (!id.equals(theme.themeId())) theme.setTheme(id);
+                theme.select();
+            }
+            @Override public void homeChanged() { lastSignature = ""; reloadApps(true); }
+            @Override public void sub(String which) { hubSub(which); }
+            @Override public int hiddenCount() { return repo.hidden().size(); }
         });
         root.addView(hub, new FrameLayout.LayoutParams(-1, -1));
+
+        // zoom-into-app layer
+        launchLayer = new FrameLayout(this);
+        launchLayer.setVisibility(View.GONE);
+        launchLayer.setClipChildren(false);
+        launchFade = new View(this);
+        launchFade.setBackgroundColor(Color.BLACK);
+        launchFade.setAlpha(0f);
+        root.addView(launchLayer, new FrameLayout.LayoutParams(-1, -1));
 
         // menus
         overlay = new FrameLayout(this);
@@ -307,16 +331,16 @@ public class MainActivity extends Activity {
         overlay.addView(scrim, new FrameLayout.LayoutParams(-1, -1));
         panel = new LinearLayout(this);
         panel.setOrientation(LinearLayout.VERTICAL);
-        panel.setPadding(dp(30), dp(40), dp(30), dp(30));
-        overlay.addView(panel, new FrameLayout.LayoutParams(dp(400), -1, Gravity.END));
+        panel.setPadding(dp(32), dp(44), dp(32), dp(30));
+        overlay.addView(panel, new FrameLayout.LayoutParams(dp(420), -1, Gravity.END));
         root.addView(overlay, new FrameLayout.LayoutParams(-1, -1));
 
-        banner = text(13, C_TEXT, "sans-serif-medium", Typeface.NORMAL);
-        banner.setPadding(dp(20), dp(10), dp(20), dp(10));
+        banner = Ui.text(this, 13, Ui.TEXT, Ui.body(this, true));
+        banner.setPadding(dp(22), dp(11), dp(22), dp(11));
         GradientDrawable bgd = new GradientDrawable();
-        bgd.setCornerRadius(dp(22));
-        bgd.setColor(Color.argb(235, 18, 24, 40));
-        bgd.setStroke(dp(1), Color.argb(90, 255, 255, 255));
+        bgd.setCornerRadius(dp(24));
+        bgd.setColor(Color.argb(238, 16, 20, 34));
+        bgd.setStroke(dp(1), Color.argb(70, 255, 255, 255));
         banner.setBackground(bgd);
         banner.setVisibility(View.INVISIBLE);
         FrameLayout.LayoutParams blp = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.CENTER_HORIZONTAL);
@@ -332,7 +356,112 @@ public class MainActivity extends Activity {
         ImageView v = new ImageView(this);
         v.setScaleType(ImageView.ScaleType.CENTER_CROP);
         v.setAlpha(0f);
+        v.setVisibility(View.INVISIBLE);
         return v;
+    }
+
+    /** Overdrive's mark: two chevrons and the wordmark. */
+    static class Logo extends View {
+        private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint t = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.SUBPIXEL_TEXT_FLAG);
+        private final Path path = new Path();
+        private final float d;
+        Logo(Context c) {
+            super(c);
+            d = c.getResources().getDisplayMetrics().density;
+            p.setStyle(Paint.Style.STROKE);
+            p.setStrokeCap(Paint.Cap.ROUND);
+            p.setStrokeJoin(Paint.Join.ROUND);
+            p.setStrokeWidth(3.2f * d);
+            p.setColor(Ui.ACCENT);
+            t.setColor(Color.WHITE);
+            t.setTypeface(Ui.display(c, 700));
+            t.setTextSize(15 * d);
+            t.setLetterSpacing(0.32f);
+        }
+        @Override protected void onDraw(Canvas c) {
+            float cy = getHeight() / 2f, s = 8 * d;
+            for (int i = 0; i < 2; i++) {
+                float x = s + i * s * 0.95f;
+                path.reset();
+                path.moveTo(x - s * 0.55f, cy - s);
+                path.lineTo(x + s * 0.35f, cy);
+                path.lineTo(x - s * 0.55f, cy + s);
+                p.setAlpha(i == 0 ? 150 : 255);
+                c.drawPath(path, p);
+            }
+            c.drawText("OVERDRIVE", s * 3.4f, cy + 5.2f * d, t);
+        }
+    }
+
+    private View buildDock() {
+        LinearLayout bar = new LinearLayout(this);
+        bar.setOrientation(LinearLayout.HORIZONTAL);
+        bar.setGravity(Gravity.CENTER_VERTICAL);
+        noClip(bar);
+        bar.addView(new Logo(this), new LinearLayout.LayoutParams(dp(220), dp(32)));
+        bar.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1f));
+
+        weatherIcon = Ui.text(this, 20, Ui.TEXT, Ui.body(this, false));
+        weatherIcon.setText("·");
+        bar.addView(weatherIcon);
+        LinearLayout wcol = new LinearLayout(this);
+        wcol.setOrientation(LinearLayout.VERTICAL);
+        wcol.setPadding(dp(8), 0, 0, 0);
+        weatherTemp = Ui.text(this, 15, Ui.TEXT, Ui.display(this, 500));
+        weatherTemp.setText("--°");
+        weatherPlace = Ui.text(this, 10, Ui.FAINT, Ui.body(this, false));
+        weatherPlace.setSingleLine(true);
+        weatherPlace.setText("Weather");
+        wcol.addView(weatherTemp);
+        wcol.addView(weatherPlace);
+        bar.addView(wcol);
+
+        View div = new View(this);
+        div.setBackgroundColor(Color.argb(50, 255, 255, 255));
+        LinearLayout.LayoutParams divLp = new LinearLayout.LayoutParams(dp(1), dp(26));
+        divLp.leftMargin = dp(18);
+        divLp.rightMargin = dp(18);
+        bar.addView(div, divLp);
+
+        LinearLayout ccol = new LinearLayout(this);
+        ccol.setOrientation(LinearLayout.VERTICAL);
+        ccol.setGravity(Gravity.END);
+        clockTime = Ui.text(this, 20, Ui.TEXT, Ui.display(this, 500));
+        clockTime.setSingleLine(true);
+        ccol.addView(clockTime, new LinearLayout.LayoutParams(-2, -2));
+        clockDate = Ui.text(this, 10, Ui.FAINT, Ui.body(this, false));
+        clockDate.setSingleLine(true);
+        LinearLayout.LayoutParams cdl = new LinearLayout.LayoutParams(-2, -2);
+        cdl.gravity = Gravity.END;
+        ccol.addView(clockDate, cdl);
+        bar.addView(ccol);
+
+        dockSearch = new Ui.Pill(this, "search", null, false);
+        LinearLayout.LayoutParams sl = new LinearLayout.LayoutParams(dp(40), dp(40));
+        sl.leftMargin = dp(22);
+        bar.addView(dockSearch, sl);
+        dockSearch.setOnClickListener(v -> { sound.play(Sound.OPEN); openSearch(); });
+        dockSearch.setOnFocusChangeListener((v, has) -> { if (has) { dockHero("Search", "Find any app by name"); themeAt(v, Ui.ACCENT); } });
+
+        FrameLayout gearWrap = new FrameLayout(this);
+        noClip(gearWrap);
+        dockSettings = new Ui.Pill(this, "gear", null, false);
+        gearWrap.addView(dockSettings, new FrameLayout.LayoutParams(dp(40), dp(40)));
+        updateDot = new View(this);
+        GradientDrawable ud = new GradientDrawable();
+        ud.setShape(GradientDrawable.OVAL);
+        ud.setColor(Color.parseColor("#FF4D6D"));
+        ud.setStroke(dp(2), Color.parseColor("#0A0D18"));
+        updateDot.setBackground(ud);
+        updateDot.setVisibility(View.GONE);
+        gearWrap.addView(updateDot, new FrameLayout.LayoutParams(dp(12), dp(12), Gravity.TOP | Gravity.END));
+        LinearLayout.LayoutParams gl = new LinearLayout.LayoutParams(dp(40), dp(40));
+        gl.leftMargin = dp(12);
+        bar.addView(gearWrap, gl);
+        dockSettings.setOnClickListener(v -> { sound.play(Sound.OPEN); openSettings(); });
+        dockSettings.setOnFocusChangeListener((v, has) -> { if (has) { dockHero("Settings", "Themes, sounds, power-up and Fire TV"); themeAt(v, Ui.ACCENT); } });
+        return bar;
     }
 
     private View buildHero() {
@@ -341,25 +470,47 @@ public class MainActivity extends Activity {
         LinearLayout left = new LinearLayout(this);
         left.setOrientation(LinearLayout.VERTICAL);
         left.setGravity(Gravity.CENTER_VERTICAL);
-        heroName = text(32, C_TEXT, "sans-serif", Typeface.BOLD);
+        noClip(left);
+        heroEyebrow = Ui.text(this, 11.5f, Ui.ACCENT, Ui.body(this, true));
+        heroEyebrow.setLetterSpacing(0.26f);
+        heroEyebrow.setSingleLine(true);
+        left.addView(heroEyebrow, new LinearLayout.LayoutParams(-1, -2));
+        heroName = Ui.text(this, 44, Ui.TEXT, Ui.display(this, 700));
         heroName.setSingleLine(true);
         heroName.setEllipsize(TextUtils.TruncateAt.END);
-        heroName.setShadowLayer(dp(6), 0, dp(2), Color.argb(170, 0, 0, 0));
-        left.addView(heroName, new LinearLayout.LayoutParams(-1, -2));
-        heroTag = text(10.5f, C_ACCENT, "sans-serif-medium", Typeface.NORMAL);
-        heroTag.setLetterSpacing(0.22f);
-        heroTag.setSingleLine(true);
-        LinearLayout.LayoutParams tl = new LinearLayout.LayoutParams(-1, -2);
-        tl.topMargin = dp(8);
-        left.addView(heroTag, tl);
-        heroMeta = text(11.5f, Color.argb(200, 255, 255, 255), "sans-serif", Typeface.NORMAL);
+        heroName.setLetterSpacing(-0.01f);
+        heroName.setShadowLayer(dp(8), 0, dp(2), Color.argb(150, 0, 0, 0));
+        LinearLayout.LayoutParams nl = new LinearLayout.LayoutParams(-1, -2);
+        nl.topMargin = dp(2);
+        left.addView(heroName, nl);
+        heroMeta = Ui.text(this, 13.5f, Ui.SUB, Ui.body(this, false));
         heroMeta.setSingleLine(true);
-        heroMeta.setShadowLayer(dp(8), 0, 0, Color.BLACK);
-        LinearLayout.LayoutParams ml = new LinearLayout.LayoutParams(-1, -2);
-        ml.topMargin = dp(10);
-        left.addView(heroMeta, ml);
+        left.addView(heroMeta, new LinearLayout.LayoutParams(-1, -2));
+
+        LinearLayout acts = new LinearLayout(this);
+        acts.setOrientation(LinearLayout.HORIZONTAL);
+        noClip(acts);
+        actOpen = new Ui.Pill(this, "play", "Open", true);
+        actOptions = new Ui.Pill(this, "dots", "Options", false);
+        actPin = new Ui.Pill(this, "pin", "Pin", false);
+        LinearLayout.LayoutParams al = new LinearLayout.LayoutParams(-2, dp(40));
+        al.rightMargin = dp(12);
+        acts.addView(actOpen, al);
+        acts.addView(actOptions, new LinearLayout.LayoutParams(al));
+        acts.addView(actPin, new LinearLayout.LayoutParams(al));
+        LinearLayout.LayoutParams acl = new LinearLayout.LayoutParams(-2, -2);
+        acl.topMargin = dp(16);
+        left.addView(acts, acl);
+        actOpen.setOnClickListener(v -> { if (heroOpen != null) heroOpen.run(); });
+        actOptions.setOnClickListener(v -> { if (heroApp != null) showAppMenu(heroApp, heroTile, heroRowKey); });
+        actPin.setOnClickListener(v -> { if (heroApp != null) togglePin(heroApp); });
+        View.OnFocusChangeListener actFocus = (v, has) -> { if (has) themeAt(v, currentAccent); };
+        actOpen.setOnFocusChangeListener(actFocus);
+        actOptions.setOnFocusChangeListener(actFocus);
+        actPin.setOnFocusChangeListener(actFocus);
+
         FrameLayout.LayoutParams llp = new FrameLayout.LayoutParams(-1, -1);
-        llp.rightMargin = dp(330);
+        llp.rightMargin = dp(380);
         hero.addView(left, llp);
 
         heroCard = new TileView(this, 1f);
@@ -367,138 +518,72 @@ public class MainActivity extends Activity {
         heroCard.setFocusableInTouchMode(false);
         heroCard.setClickable(false);
         heroCard.setAlwaysLit();
-
         heroCard.setCameraDistance(8000 * d);
-        FrameLayout.LayoutParams clp = new FrameLayout.LayoutParams(dp(240), dp(135), Gravity.END | Gravity.CENTER_VERTICAL);
-        clp.rightMargin = dp(56);
+        FrameLayout.LayoutParams clp = new FrameLayout.LayoutParams(dp(300), dp(169), Gravity.END | Gravity.CENTER_VERTICAL);
+        clp.rightMargin = dp(58);
         hero.addView(heroCard, clp);
         return hero;
     }
 
-    private View buildTopBar() {
-        LinearLayout bar = new LinearLayout(this);
-        bar.setOrientation(LinearLayout.HORIZONTAL);
-        bar.setGravity(Gravity.CENTER_VERTICAL);
-        noClip(bar);
-
-        View dot = new View(this);
-        GradientDrawable dd = new GradientDrawable();
-        dd.setShape(GradientDrawable.OVAL);
-        dd.setColor(C_ACCENT);
-        dot.setBackground(dd);
-        LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(dp(8), dp(8));
-        dlp.rightMargin = dp(10);
-        bar.addView(dot, dlp);
-        breathe(dot);
-        TextView brand = text(12, C_TEXT, "sans-serif-black", Typeface.NORMAL);
-        brand.setText("OVERDRIVE");
-        brand.setLetterSpacing(0.45f);
-        brand.setAlpha(0.9f);
-        bar.addView(brand);
-
-        bar.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1f));
-
-        weatherIcon = text(22, C_TEXT, "sans-serif", Typeface.NORMAL);
-        weatherIcon.setText("·");
-        bar.addView(weatherIcon);
-        LinearLayout wcol = new LinearLayout(this);
-        wcol.setOrientation(LinearLayout.VERTICAL);
-        wcol.setPadding(dp(8), 0, 0, 0);
-        weatherTemp = text(17, C_TEXT, "sans-serif-medium", Typeface.NORMAL);
-        weatherTemp.setText("--°");
-        weatherPlace = text(9.5f, C_SUB, "sans-serif", Typeface.NORMAL);
-        weatherPlace.setText("Weather");
-        wcol.addView(weatherTemp);
-        LinearLayout.LayoutParams wplp = new LinearLayout.LayoutParams(-2, -2);
-        wplp.topMargin = dp(3);
-        wcol.addView(weatherPlace, wplp);
-        bar.addView(wcol);
-
-        View div = new View(this);
-        div.setBackgroundColor(Color.argb(60, 255, 255, 255));
-        LinearLayout.LayoutParams divLp = new LinearLayout.LayoutParams(dp(1), dp(28));
-        divLp.leftMargin = dp(20);
-        divLp.rightMargin = dp(20);
-        bar.addView(div, divLp);
-
-        LinearLayout ccol = new LinearLayout(this);
-        ccol.setOrientation(LinearLayout.VERTICAL);
-        ccol.setGravity(Gravity.END);
-        // one single-line text for "10:01 PM" so nothing can get squeezed or cut off
-        clockTime = text(26, C_TEXT, "sans-serif-light", Typeface.NORMAL);
-        clockTime.setIncludeFontPadding(true);
-        clockTime.setSingleLine(true);
-        clockTime.setGravity(Gravity.END);
-        ccol.addView(clockTime, new LinearLayout.LayoutParams(-2, -2));
-        clockDate = text(9.5f, C_SUB, "sans-serif", Typeface.NORMAL);
-        clockDate.setSingleLine(true);
-        LinearLayout.LayoutParams cdl = new LinearLayout.LayoutParams(-2, -2);
-        cdl.topMargin = dp(1);
-        cdl.gravity = Gravity.END;
-        ccol.addView(clockDate, cdl);
-        bar.addView(ccol);
-
-        gear = new FrameLayout(this);
-        noClip(gear);
-        gear.setFocusable(true);
-        gear.setClickable(true);
-        final GradientDrawable gbg = new GradientDrawable();
-        gbg.setShape(GradientDrawable.OVAL);
-        gbg.setColor(Color.argb(40, 255, 255, 255));
-        gbg.setStroke(dp(1), Color.argb(60, 255, 255, 255));
-        gear.setBackground(gbg);
-        TextView g = text(18, C_TEXT, "sans-serif", Typeface.NORMAL);
-        g.setText("⚙");
-        gear.addView(g, new FrameLayout.LayoutParams(-2, -2, Gravity.CENTER));
-        updateDot = new View(this);
-        GradientDrawable ud = new GradientDrawable();
-        ud.setShape(GradientDrawable.OVAL);
-        ud.setColor(Color.parseColor("#FF4D6D"));
-        ud.setStroke(dp(2), Color.parseColor("#0A0F1F"));
-        updateDot.setBackground(ud);
-        updateDot.setVisibility(View.GONE);
-        gear.addView(updateDot, new FrameLayout.LayoutParams(dp(12), dp(12), Gravity.TOP | Gravity.END));
-        LinearLayout.LayoutParams glp = new LinearLayout.LayoutParams(dp(40), dp(40));
-        glp.leftMargin = dp(22);
-        bar.addView(gear, glp);
-        gear.setOnFocusChangeListener((v, has) -> {
-            gbg.setColor(has ? Color.WHITE : Color.argb(40, 255, 255, 255));
-            g.setTextColor(has ? Color.parseColor("#0A0F1F") : C_TEXT);
-            v.animate().scaleX(has ? 1.18f : 1f).scaleY(has ? 1.18f : 1f).rotation(has ? 60 : 0)
-                    .setInterpolator(new OvershootInterpolator(2f)).setDuration(300).start();
-            if (has) {
-                setHero("Settings", "OVERDRIVE  ·  FIRE TV  ·  VOLUME", "Press OK to open", Color.WHITE, null, null);
-                theme.focusAt(0.95f, 0.08f, lastDx, lastDy);
-            }
-        });
-        gear.setOnClickListener(v -> { sound.play(Sound.OPEN); openSettings(); });
-        return bar;
-    }
-
-    private void breathe(View v) {
-        v.animate().alpha(0.25f).scaleX(0.7f).scaleY(0.7f).setDuration(1400)
-                .withEndAction(() -> v.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(1400)
-                        .withEndAction(() -> breathe(v)).start()).start();
+    private void themeAt(View v, int accent) {
+        int[] loc = new int[2];
+        v.getLocationOnScreen(loc);
+        theme.focusAt((loc[0] + v.getWidth() / 2f) / Math.max(1, root.getWidth()),
+                (loc[1] + v.getHeight() / 2f) / Math.max(1, root.getHeight()), lastDx, lastDy);
+        theme.setAccent(accent);
+        lastDx = 0;
+        lastDy = 0;
     }
 
     // =====================================================================
     // Rows
     // =====================================================================
 
+    private static final int ROW_GAP = 14;
+
+    private void showSkeleton() {
+        rowsBox.removeAllViews();
+        for (int r = 0; r < 2; r++) {
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.VERTICAL);
+            View label = new Ui.Skeleton(this);
+            row.addView(label, new LinearLayout.LayoutParams(dp(110), dp(12)));
+            LinearLayout strip = new LinearLayout(this);
+            strip.setOrientation(LinearLayout.HORIZONTAL);
+            strip.setPadding(0, dp(14), 0, dp(26));
+            for (int i = 0; i < 5; i++) {
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(192), dp(108));
+                lp.rightMargin = dp(20);
+                strip.addView(new Ui.Skeleton(this), lp);
+            }
+            row.addView(strip);
+            rowsBox.addView(row);
+        }
+    }
+
+    private List<AppRepo.App> visibleApps() {
+        Set<String> hidden = repo.hidden();
+        List<AppRepo.App> out = new ArrayList<>();
+        for (AppRepo.App a : allApps) if (!hidden.contains(a.pkg)) out.add(a);
+        return out;
+    }
+
     private void reloadApps(boolean force) {
         io.execute(() -> {
             List<AppRepo.App> apps = repo.loadAll();
-            List<Inputs.Input> inputs = Inputs.list(this);
+            boolean showInputs = repo.prefs().getBoolean(SettingsHub.K_INPUTS, true);
+            List<Inputs.Input> inputs = showInputs ? Inputs.list(this) : new ArrayList<>();
             Map<String, String> catOf = new HashMap<>();
             for (AppRepo.App a : apps) catOf.put(a.pkg, cats.of(a.pkg));
             StringBuilder sig = new StringBuilder();
             for (AppRepo.App a : apps) sig.append(a.pkg).append(a.label).append(catOf.get(a.pkg)).append(';');
             for (Inputs.Input in : inputs) sig.append(in.id).append(in.label);
-            sig.append('|').append(repo.hidden()).append('|').append(repo.recents()).append('|').append(repo.favorites());
+            sig.append('|').append(repo.hidden()).append('|').append(repo.recents()).append('|').append(repo.favorites())
+                    .append('|').append(repo.prefs().getBoolean(SettingsHub.K_QUICK, true));
             String s = sig.toString();
             ui.post(() -> {
                 if (!force && s.equals(lastSignature)) return;
-                if (movingPkg != null) return; // don't rebuild under a move
+                if (movingPkg != null) return;
                 lastSignature = s;
                 allApps = apps;
                 byPkg.clear();
@@ -517,36 +602,32 @@ public class MainActivity extends Activity {
         litRow = null;
         catCache = catOf;
         Set<String> hidden = repo.hidden();
-        List<AppRepo.App> visible = new ArrayList<>();
-        for (AppRepo.App a : allApps) if (!hidden.contains(a.pkg)) visible.add(a);
+        List<AppRepo.App> visible = visibleApps();
+        List<String> favs = repo.favorites();
         int idx = 0;
 
-        // favorites
-        List<String> favs = repo.favorites();
+        // favorites (always first; a friendly hint when empty)
         List<AppRepo.App> favApps = new ArrayList<>();
         for (String p : favs) { AppRepo.App a = byPkg.get(p); if (a != null && !hidden.contains(p)) favApps.add(a); }
-        if (!favApps.isEmpty()) {
-            LinearLayout strip = addRow("FAVORITES", "fav");
-            for (AppRepo.App a : favApps) idx = addAppTile(strip, a, "fav", 208, 117, 1.1f, "FAVORITE", idx);
-        }
+        LinearLayout favStrip = addRow("FAVORITES", "fav");
+        if (favApps.isEmpty()) idx = addHintTile(favStrip, idx);
+        for (AppRepo.App a : favApps) idx = addAppTile(favStrip, a, "fav", 208, 117, 1.1f, "FAVORITE", idx, true);
 
         // recent
         List<AppRepo.App> recent = new ArrayList<>();
         for (String p : repo.recents()) { AppRepo.App a = byPkg.get(p); if (a != null && !hidden.contains(p)) recent.add(a); }
-        boolean starter = recent.isEmpty() && favApps.isEmpty();
-        if (starter) for (int i = 0; i < Math.min(6, visible.size()); i++) recent.add(visible.get(i));
+        if (recent.isEmpty()) for (int i = 0; i < Math.min(6, visible.size()); i++) recent.add(visible.get(i));
         if (!recent.isEmpty()) {
-            LinearLayout strip = addRow(starter ? "START HERE" : "RECENT", "rec");
-            for (AppRepo.App a : recent) idx = addAppTile(strip, a, "rec", 208, 117, 1.1f, starter ? "PICK SOMETHING" : "RECENTLY USED", idx);
+            boolean starter = repo.recents().isEmpty();
+            LinearLayout strip = addRow(starter ? "START HERE" : "CONTINUE", "rec");
+            for (AppRepo.App a : recent) idx = addAppTile(strip, a, "rec", 208, 117, 1.1f, starter ? "PICK SOMETHING" : "RECENTLY OPENED", idx, favs.contains(a.pkg));
         }
 
-        // HDMI inputs
         if (!inputs.isEmpty()) {
             LinearLayout strip = addRow("INPUTS", "in");
             for (Inputs.Input in : inputs) idx = addInputTile(strip, in, idx);
         }
 
-        // categories
         Map<String, List<AppRepo.App>> byCat = new LinkedHashMap<>();
         for (String c : Categories.ORDER) byCat.put(c, new ArrayList<>());
         for (AppRepo.App a : visible) {
@@ -557,80 +638,104 @@ public class MainActivity extends Activity {
         for (Map.Entry<String, List<AppRepo.App>> e : byCat.entrySet()) {
             if (e.getValue().isEmpty()) continue;
             String key = "cat" + e.getKey();
-            LinearLayout strip = addRow(e.getKey().toUpperCase(Locale.US), key);
-            for (AppRepo.App a : e.getValue()) idx = addAppTile(strip, a, key, 176, 99, 1.12f, e.getKey().toUpperCase(Locale.US), idx);
+            String title = e.getKey().toUpperCase(Locale.US);
+            LinearLayout strip = addRow(title, key);
+            for (AppRepo.App a : e.getValue()) idx = addAppTile(strip, a, key, 192, 108, 1.12f, title, idx, favs.contains(a.pkg));
         }
 
-        // quick settings
-        LinearLayout qs = addRow("QUICK SETTINGS", "qs");
-        idx = addQuickTile(qs, "Wi-Fi", "wifi", Settings.ACTION_WIFI_SETTINGS, Color.parseColor("#3DA9FF"), idx);
-        idx = addQuickTile(qs, "Bluetooth & Remotes", "bt", Settings.ACTION_BLUETOOTH_SETTINGS, Color.parseColor("#7C6CFF"), idx);
-        idx = addQuickTile(qs, "Display & Sounds", "display", Settings.ACTION_DISPLAY_SETTINGS, Color.parseColor("#2BD9A8"), idx);
-        idx = addQuickTile(qs, "Applications", "apps", Settings.ACTION_APPLICATION_SETTINGS, Color.parseColor("#FFB13D"), idx);
-        addQuickTile(qs, "All Settings", "gear", Settings.ACTION_SETTINGS, Color.parseColor("#8FA3C7"), idx);
+        if (repo.prefs().getBoolean(SettingsHub.K_QUICK, true)) {
+            LinearLayout qs = addRow("QUICK SETTINGS", "qs");
+            idx = addQuickTile(qs, "Wi-Fi", "wifi", Settings.ACTION_WIFI_SETTINGS, Color.parseColor("#3DA9FF"), idx);
+            idx = addQuickTile(qs, "Bluetooth", "remote", Settings.ACTION_BLUETOOTH_SETTINGS, Color.parseColor("#7C6CFF"), idx);
+            idx = addQuickTile(qs, "Display & Sound", "display", Settings.ACTION_DISPLAY_SETTINGS, Color.parseColor("#2BD9A8"), idx);
+            idx = addQuickTile(qs, "Applications", "apps", Settings.ACTION_APPLICATION_SETTINGS, Color.parseColor("#FFB13D"), idx);
+            addQuickTile(qs, "All Settings", "gear", null, Color.parseColor("#8FA3C7"), idx);
+        }
 
         firstBuild = false;
-        if (overlay.getVisibility() == View.VISIBLE) return;
+        if (overlay.getVisibility() == View.VISIBLE || hub.isOpen() || search.isOpen()) return;
         TileView restore = keepKey != null ? tileByKey.get(keepKey) : null;
         if (restore != null) restore.requestFocus();
-        else if (!gear.isFocused()) focusFirstTile();
+        else if (f == null || !f.isAttachedToWindow() || f instanceof TileView) focusFirstTile(); // keep focus on dock/buttons
     }
 
+    /** Row = label + a strip of tiles with the gliding focus light under it. */
     private LinearLayout addRow(String title, String key) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.VERTICAL);
         row.setTag("row:" + key);
         noClip(row);
-        TextView label = text(10.5f, C_TEXT, "sans-serif-medium", Typeface.NORMAL);
-        label.setLetterSpacing(0.3f);
+        TextView label = Ui.text(this, 11.5f, Ui.TEXT, Ui.body(this, true));
+        label.setLetterSpacing(0.24f);
         label.setText(title);
-        label.setAlpha(0.55f);
+        label.setAlpha(0.5f);
         label.setTag("label");
         row.addView(label);
         Strip hs = new Strip(this);
         hs.setHorizontalScrollBarEnabled(false);
         hs.setOverScrollMode(View.OVER_SCROLL_NEVER);
-        hs.setPadding(dp(4), dp(12), dp(60), dp(14));
+        hs.setPadding(dp(4), dp(14), dp(80), dp(10));
         noClip(hs);
+        FrameLayout holder = new FrameLayout(this);
+        holder.setPadding(0, 0, 0, dp(16));
+        noClip(holder);
         LinearLayout strip = new LinearLayout(this);
         strip.setOrientation(LinearLayout.HORIZONTAL);
         noClip(strip);
-        hs.addView(strip);
+        holder.addView(strip, new FrameLayout.LayoutParams(-2, -2));
+        // the signature "drive line": a light that glides to whatever you focus in this row
+        View glow = new View(this);
+        glow.setBackground(Ui.solid(this, Color.argb(70, 61, 169, 255), 6));
+        glow.setTag("glow");
+        glow.setAlpha(0f);
+        holder.addView(glow, new FrameLayout.LayoutParams(dp(100), dp(10), Gravity.BOTTOM | Gravity.START));
+        View line = new View(this);
+        line.setBackground(Ui.solid(this, Ui.ACCENT, 2));
+        line.setTag("line");
+        line.setAlpha(0f);
+        FrameLayout.LayoutParams ll = new FrameLayout.LayoutParams(dp(100), dp(3), Gravity.BOTTOM | Gravity.START);
+        ll.bottomMargin = dp(3.5f);
+        holder.addView(line, ll);
+        hs.addView(holder);
         LinearLayout.LayoutParams hlp = new LinearLayout.LayoutParams(-1, -2);
         hlp.leftMargin = -dp(4);
         row.addView(hs, hlp);
         LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(-1, -2);
-        rlp.topMargin = dp(6);
+        rlp.topMargin = dp(4);
         rowsBox.addView(row, rlp);
         return strip;
     }
 
-    private void placeTile(LinearLayout strip, TileView t, int w, int h, int idx) {
+    private void placeTile(LinearLayout strip, View t, int w, int h, int idx) {
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(w), dp(h));
-        lp.rightMargin = dp(18);
+        lp.rightMargin = dp(20);
         strip.addView(t, lp);
         if (firstBuild) {
             t.setAlpha(0f);
-            t.setTranslationY(dp(30));
-            long base = intro.isPlaying() ? 1900 : 120;
-            t.animate().alpha(1f).translationY(0).setStartDelay(base + Math.min(idx, 24) * 30L)
-                    .setDuration(420).setInterpolator(EASE).start();
+            t.setTranslationY(dp(26));
+            long base = intro.isPlaying() ? 1900 : 80;
+            t.animate().alpha(1f).translationY(0).setStartDelay(base + Math.min(idx, 20) * 28L)
+                    .setDuration(460).setInterpolator(Ui.EASE_OUT).start();
         }
     }
 
-    private int addAppTile(LinearLayout strip, AppRepo.App a, String rowKey, int w, int h, float scale, String tag, int idx) {
+    private int addAppTile(LinearLayout strip, AppRepo.App a, String rowKey, int w, int h, float scale, String tag, int idx, boolean pinned) {
         TileView t = new TileView(this, scale);
         t.setApp(a);
+        t.setBadge(pinned && !"fav".equals(rowKey));
         String key = rowKey + ":" + a.pkg;
         t.setTag(key);
         tileByKey.put(key, t);
         t.setOnFocusChangeListener((v, has) -> {
             if (!has) return;
-            String meta = metaFor(a);
-            setHero(a.label, tag + "  ·  ☰ OPTIONS", meta, t.getAccent(), a.blurBmp, t);
+            heroApp = a;
+            heroTile = t;
+            heroRowKey = rowKey;
+            heroOpen = () -> launchApp(t, repo.launchIntent(a.pkg), a.pkg);
+            setHero(a.label, tag, metaFor(a), t.getAccent(), a.blurBmp, t, true, repo.favorites().contains(a.pkg));
             onTileFocused(t);
         });
-        t.setOnClickListener(v -> launch(t, a.pkg));
+        t.setOnClickListener(v -> launchApp(t, repo.launchIntent(a.pkg), a.pkg));
         t.setOnLongClickListener(v -> { showAppMenu(a, t, rowKey); return true; });
         t.setOnKeyListener((v, code, ev) -> {
             if (code == KeyEvent.KEYCODE_MENU) {
@@ -643,57 +748,90 @@ public class MainActivity extends Activity {
         return idx + 1;
     }
 
+    private int addHintTile(LinearLayout strip, int idx) {
+        TileView t = new TileView(this, 1.06f);
+        final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        final Paint ic = new Paint(Paint.ANTI_ALIAS_FLAG);
+        final TextPaint big = new TextPaint(Paint.ANTI_ALIAS_FLAG | Paint.SUBPIXEL_TEXT_FLAG);
+        final TextPaint small = new TextPaint(Paint.ANTI_ALIAS_FLAG | Paint.SUBPIXEL_TEXT_FLAG);
+        big.setColor(Color.WHITE);
+        big.setTypeface(Ui.display(this, 500));
+        small.setColor(Ui.SUB);
+        small.setTypeface(Ui.body(this, false));
+        final Path path = new Path();
+        final RectF tmp = new RectF();
+        t.setCustom("Pin your favorites", Ui.ACCENT, (c, r, focus) -> {
+            p.setStyle(Paint.Style.FILL);
+            p.setColor(Color.argb(22, 255, 255, 255));
+            c.drawRoundRect(r, dp(14), dp(14), p);
+            p.setStyle(Paint.Style.STROKE);
+            p.setStrokeWidth(dp(1.5f));
+            p.setPathEffect(new android.graphics.DashPathEffect(new float[]{dp(6), dp(5)}, 0));
+            p.setColor(Color.argb(90, 255, 255, 255));
+            c.drawRoundRect(r, dp(14), dp(14), p);
+            p.setPathEffect(null);
+            ic.setColor(Ui.ACCENT);
+            Icons.draw(c, "pin", r.left + dp(30), r.centerY() - dp(10), dp(10), ic, path, tmp, d, 0);
+            big.setTextSize(dp(15));
+            c.drawText("Pin your favorites", r.left + dp(52), r.centerY() - dp(4), big);
+            small.setTextSize(dp(11));
+            c.drawText("Press ☰ on any app, then Pin", r.left + dp(52), r.centerY() + dp(14), small);
+        });
+        t.setTag("fav:hint");
+        t.setOnFocusChangeListener((v, has) -> {
+            if (!has) return;
+            heroApp = null;
+            heroOpen = null;
+            setHero("Your favorites live here", "FAVORITES", "Press ☰ on any app below and choose Pin", Ui.ACCENT, null, null, false, false);
+            onTileFocused(t);
+        });
+        t.setOnClickListener(v -> { t.pulse(); sound.play(Sound.BUMP); showBanner("Press ☰ on any app, then pick Pin"); });
+        placeTile(strip, t, 320, 117, idx);
+        return idx + 1;
+    }
+
     private int addInputTile(LinearLayout strip, Inputs.Input in, int idx) {
         TileView t = new TileView(this, 1.12f);
         final int accent = Color.parseColor("#FF5A7A");
         final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
-        final Paint port = new Paint(Paint.ANTI_ALIAS_FLAG);
-        final TextPaint tp = new TextPaint(Paint.ANTI_ALIAS_FLAG);
+        final Paint ic = new Paint(Paint.ANTI_ALIAS_FLAG);
+        final TextPaint tp = new TextPaint(Paint.ANTI_ALIAS_FLAG | Paint.SUBPIXEL_TEXT_FLAG);
         tp.setColor(Color.WHITE);
-        tp.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        final Path shape = new Path();
+        tp.setTypeface(Ui.body(this, true));
         final RectF[] last = {new RectF()};
+        final Path path = new Path();
+        final RectF tmp = new RectF();
         t.setCustom(in.label, accent, (c, r, focus) -> {
             if (!r.equals(last[0])) {
                 last[0] = new RectF(r);
                 p.setShader(new LinearGradient(r.left, r.top, r.right, r.bottom,
-                        Color.parseColor("#4A1830"), Color.parseColor("#1A0A14"), Shader.TileMode.CLAMP));
+                        Color.parseColor("#4A1830"), Color.parseColor("#160810"), Shader.TileMode.CLAMP));
             }
-            c.drawRoundRect(r, dp(10), dp(10), p);
-            // HDMI port glyph
-            float cw = r.width() * 0.26f, ch = r.height() * 0.2f, cx = r.centerX(), cy = r.top + r.height() * 0.38f;
-            shape.reset();
-            shape.moveTo(cx - cw / 2, cy - ch / 2);
-            shape.lineTo(cx + cw / 2, cy - ch / 2);
-            shape.lineTo(cx + cw / 2, cy + ch * 0.1f);
-            shape.lineTo(cx + cw * 0.35f, cy + ch / 2);
-            shape.lineTo(cx - cw * 0.35f, cy + ch / 2);
-            shape.lineTo(cx - cw / 2, cy + ch * 0.1f);
-            shape.close();
-            port.setStyle(Paint.Style.STROKE);
-            port.setStrokeWidth(dp(2));
-            port.setColor(Themes.withA(accent, 160 + (int) (95 * focus)));
-            c.drawPath(shape, port);
-            tp.setTextSize(r.height() * 0.15f);
+            c.drawRoundRect(r, dp(14), dp(14), p);
+            ic.setColor(Color.WHITE);
+            Icons.draw(c, "inputs", r.centerX(), r.top + r.height() * 0.4f, r.height() * 0.17f, ic, path, tmp, d, focus);
+            tp.setTextSize(r.height() * 0.14f);
             CharSequence s = TextUtils.ellipsize(in.label, tp, r.width() - dp(16), TextUtils.TruncateAt.END);
-            float lw = tp.measureText(s, 0, s.length());
-            c.drawText(s, 0, s.length(), r.centerX() - lw / 2f, r.bottom - r.height() * 0.16f, tp);
+            c.drawText(s, 0, s.length(), r.centerX() - tp.measureText(s, 0, s.length()) / 2f, r.bottom - r.height() * 0.16f, tp);
         });
         String key = "in:" + in.id;
         t.setTag(key);
         tileByKey.put(key, t);
-        t.setOnFocusChangeListener((v, has) -> {
-            if (!has) return;
-            setHero(in.label, "INPUT  ·  " + in.kind, "Switch the TV to this input", accent, null, t);
-            onTileFocused(t);
-        });
-        t.setOnClickListener(v -> {
+        Runnable open = () -> {
             t.pulse();
             sound.play(Sound.SELECT);
             theme.select();
             try { startActivity(Inputs.intent(in)); } catch (Exception e) { showBanner("This TV didn't let Overdrive switch inputs"); }
+        };
+        t.setOnFocusChangeListener((v, has) -> {
+            if (!has) return;
+            heroApp = null;
+            heroOpen = open;
+            setHero(in.label, "INPUT  ·  " + in.kind, "Switch the TV to this input", accent, null, t, false, false);
+            onTileFocused(t);
         });
-        placeTile(strip, t, 176, 99, idx);
+        t.setOnClickListener(v -> open.run());
+        placeTile(strip, t, 192, 108, idx);
         return idx + 1;
     }
 
@@ -701,86 +839,43 @@ public class MainActivity extends Activity {
         TileView t = new TileView(this, 1.12f);
         final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
         final Paint ic = new Paint(Paint.ANTI_ALIAS_FLAG);
-        final TextPaint tp = new TextPaint(Paint.ANTI_ALIAS_FLAG);
+        final TextPaint tp = new TextPaint(Paint.ANTI_ALIAS_FLAG | Paint.SUBPIXEL_TEXT_FLAG);
         tp.setColor(Color.WHITE);
-        tp.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        tp.setTypeface(Ui.body(this, true));
         final RectF[] last = {new RectF()};
         final RectF tmp = new RectF();
+        final Path path = new Path();
         t.setCustom(label, accent, (c, r, focus) -> {
             if (!r.equals(last[0])) {
                 last[0] = new RectF(r);
                 p.setShader(new LinearGradient(r.left, r.top, r.right, r.bottom,
-                        TileView.darken(accent, 0.42f), TileView.darken(accent, 0.16f), Shader.TileMode.CLAMP));
+                        TileView.darken(accent, 0.4f), TileView.darken(accent, 0.14f), Shader.TileMode.CLAMP));
             }
-            c.drawRoundRect(r, dp(10), dp(10), p);
-            float cx = r.centerX(), cy = r.top + r.height() * 0.4f, s = r.height() * 0.2f;
+            c.drawRoundRect(r, dp(14), dp(14), p);
             ic.setColor(Color.WHITE);
-            ic.setStyle(Paint.Style.STROKE);
-            ic.setStrokeWidth(dp(2.2f));
-            ic.setStrokeCap(Paint.Cap.ROUND);
-            switch (icon) {
-                case "wifi":
-                    for (int i = 1; i <= 3; i++) {
-                        float rr = s * 0.42f * i;
-                        tmp.set(cx - rr, cy + s * 0.7f - rr, cx + rr, cy + s * 0.7f + rr);
-                        c.drawArc(tmp, 225, 90, false, ic);
-                    }
-                    ic.setStyle(Paint.Style.FILL);
-                    c.drawCircle(cx, cy + s * 0.62f, dp(2.4f), ic);
-                    break;
-                case "bt":
-                    c.drawLine(cx, cy - s, cx, cy + s, ic);
-                    c.drawLine(cx, cy - s, cx + s * 0.55f, cy - s * 0.5f, ic);
-                    c.drawLine(cx + s * 0.55f, cy - s * 0.5f, cx - s * 0.5f, cy + s * 0.45f, ic);
-                    c.drawLine(cx, cy + s, cx + s * 0.55f, cy + s * 0.5f, ic);
-                    c.drawLine(cx + s * 0.55f, cy + s * 0.5f, cx - s * 0.5f, cy - s * 0.45f, ic);
-                    break;
-                case "display":
-                    tmp.set(cx - s * 1.2f, cy - s * 0.75f, cx + s * 1.2f, cy + s * 0.6f);
-                    c.drawRoundRect(tmp, dp(3), dp(3), ic);
-                    c.drawLine(cx - s * 0.5f, cy + s * 0.95f, cx + s * 0.5f, cy + s * 0.95f, ic);
-                    break;
-                case "apps":
-                    ic.setStyle(Paint.Style.FILL);
-                    float q = s * 0.38f, gap = s * 0.16f;
-                    for (int yy = 0; yy < 2; yy++) for (int xx = 0; xx < 2; xx++) {
-                        float l = cx - q - gap / 2 + xx * (q + gap), tt = cy - q - gap / 2 + yy * (q + gap);
-                        tmp.set(l, tt, l + q, tt + q);
-                        c.drawRoundRect(tmp, dp(2), dp(2), ic);
-                    }
-                    break;
-                default:
-                    c.save();
-                    c.rotate(focus * 90f, cx, cy);
-                    ic.setStyle(Paint.Style.STROKE);
-                    c.drawCircle(cx, cy, s * 0.42f, ic);
-                    for (int i = 0; i < 8; i++) {
-                        double a = Math.PI * 2 * i / 8;
-                        c.drawLine(cx + (float) Math.cos(a) * s * 0.62f, cy + (float) Math.sin(a) * s * 0.62f,
-                                cx + (float) Math.cos(a) * s * 0.9f, cy + (float) Math.sin(a) * s * 0.9f, ic);
-                    }
-                    c.restore();
-            }
+            Icons.draw(c, icon, r.centerX(), r.top + r.height() * 0.4f, r.height() * 0.18f, ic, path, tmp, d, focus);
             tp.setTextSize(r.height() * 0.14f);
             CharSequence ss = TextUtils.ellipsize(label, tp, r.width() - dp(14), TextUtils.TruncateAt.END);
-            float lw = tp.measureText(ss, 0, ss.length());
-            c.drawText(ss, 0, ss.length(), r.centerX() - lw / 2f, r.bottom - r.height() * 0.15f, tp);
+            c.drawText(ss, 0, ss.length(), r.centerX() - tp.measureText(ss, 0, ss.length()) / 2f, r.bottom - r.height() * 0.15f, tp);
         });
         String key = "qs:" + icon;
         t.setTag(key);
         tileByKey.put(key, t);
-        t.setOnFocusChangeListener((v, has) -> {
-            if (!has) return;
-            setHero(label, "QUICK SETTINGS", "Opens Fire TV settings", accent, null, t);
-            onTileFocused(t);
-        });
-        t.setOnClickListener(v -> {
+        Runnable open = () -> {
             t.pulse();
             sound.play(Sound.SELECT);
             theme.select();
-            if ("gear".equals(icon)) openSettings(); else openSettings(action);
+            if (action == null) openSettings(); else openSystemSettings(action);
+        };
+        t.setOnFocusChangeListener((v, has) -> {
+            if (!has) return;
+            heroApp = null;
+            heroOpen = open;
+            setHero(label, "QUICK SETTINGS", action == null ? "Overdrive and Fire TV settings" : "Opens the Fire TV page", accent, null, t, false, false);
+            onTileFocused(t);
         });
-        placeTile(strip, t, 150, 84, idx);
+        t.setOnClickListener(v -> open.run());
+        placeTile(strip, t, 160, 90, idx);
         return idx + 1;
     }
 
@@ -797,46 +892,71 @@ public class MainActivity extends Activity {
         return cat + "  ·  Opened " + ago;
     }
 
-    /** Everything that happens when focus lands on a tile: theme reacts, rows glide into place. */
+    /** Focus landed on a tile: theme reacts, the row glides into place, the drive line slides over. */
     private void onTileFocused(TileView t) {
-        int[] loc = new int[2];
-        t.getLocationOnScreen(loc);
-        float nx = (loc[0] + t.getWidth() / 2f) / Math.max(1, root.getWidth());
-        float ny = (loc[1] + t.getHeight() / 2f) / Math.max(1, root.getHeight());
-        theme.focusAt(nx, ny, lastDx, lastDy);
-        theme.setAccent(t.getAccent());
-        lastDx = 0;
-        lastDy = 0;
-
-        // row snapping
-        View strip = (View) t.getParent();
-        Strip hs = (Strip) strip.getParent();
+        themeAt(t, t.getAccent());
+        LinearLayout strip = (LinearLayout) t.getParent();
+        FrameLayout holder = (FrameLayout) strip.getParent();
+        Strip hs = (Strip) holder.getParent();
         View row = (View) hs.getParent();
-        int wantY = Math.max(0, row.getTop() - dp(ROW_TOP_GAP));
-        if (Math.abs(scroll.getScrollY() - wantY) > 2) scroll.smoothScrollTo(0, wantY);
-        // only slide the row when the tile gets near an edge (fewer things moving = calmer, smoother)
+
+        int wantY = Math.max(0, row.getTop() - dp(ROW_GAP));
+        Ui.scrollY(scroll, wantY, 420);
         int sx = hs.getScrollX(), vw = hs.getWidth();
-        int leftEdge = sx + dp(40), rightEdge = sx + vw - dp(260);
-        if (t.getLeft() < leftEdge) hs.smoothScrollTo(Math.max(0, t.getLeft() - dp(40)), 0);
-        else if (t.getRight() > rightEdge) hs.smoothScrollTo(t.getRight() - vw + dp(260), 0);
-        // light up this row's label (only touch the two rows that changed)
+        int leftEdge = sx + dp(40), rightEdge = sx + vw - dp(300);
+        if (t.getLeft() < leftEdge) Ui.scrollX(hs, Math.max(0, t.getLeft() - dp(40)), 380);
+        else if (t.getRight() > rightEdge) Ui.scrollX(hs, t.getRight() - vw + dp(300), 380);
+
+        // drive line
+        View line = holder.findViewWithTag("line"), glow = holder.findViewWithTag("glow");
+        float tw = t.getWidth() > 0 ? t.getWidth() : dp(192);
+        float lw = tw * 0.42f;
+        float lx = t.getLeft() + (tw - lw) / 2f;
+        moveLight(line, lx, lw / dp(100), row != litRow);
+        moveLight(glow, lx - lw * 0.1f, lw * 1.2f / dp(100), row != litRow);
+        line.setBackground(Ui.solid(this, t.getAccent() | 0xFF000000, 2));
+        glow.setBackground(Ui.solid(this, Themes.withA(t.getAccent(), 80), 6));
+
         if (row != litRow) {
             if (litRow != null) {
                 View old = litRow.findViewWithTag("label");
                 if (old != null) old.animate().alpha(0.5f).setDuration(200).start();
+                View oh = ((ViewGroup) ((ViewGroup) litRow).getChildAt(1)).getChildAt(0);
+                View ol = oh.findViewWithTag("line"), og = oh.findViewWithTag("glow");
+                if (ol != null) ol.animate().alpha(0f).setDuration(160).start();
+                if (og != null) og.animate().alpha(0f).setDuration(160).start();
             }
             View label = row.findViewWithTag("label");
-            if (label != null) label.animate().alpha(1f).setDuration(200).start();
+            if (label != null) label.animate().alpha(1f).setDuration(220).start();
             litRow = row;
+        }
+    }
+
+    private void moveLight(View v, float x, float scaleX, boolean jump) {
+        v.setPivotX(0);
+        if (jump || v.getAlpha() < 0.05f) {
+            v.animate().cancel();
+            v.setTranslationX(x);
+            v.setScaleX(scaleX);
+            v.animate().alpha(1f).setDuration(220).start();
+        } else {
+            v.animate().translationX(x).scaleX(scaleX).alpha(1f).setDuration(340).setInterpolator(Ui.SPRING).start();
         }
     }
 
     private void focusFirstTile() {
         for (int i = 0; i < rowsBox.getChildCount(); i++) {
             View row = rowsBox.getChildAt(i);
-            View strip = ((ViewGroup) ((ViewGroup) row).getChildAt(1)).getChildAt(0);
-            if (strip instanceof ViewGroup && ((ViewGroup) strip).getChildCount() > 0) {
-                ((ViewGroup) strip).getChildAt(0).requestFocus();
+            if (!(row instanceof ViewGroup) || ((ViewGroup) row).getChildCount() < 2) continue;
+            View hsv = ((ViewGroup) row).getChildAt(1);
+            if (!(hsv instanceof Strip)) continue;
+            ViewGroup holder = (ViewGroup) ((Strip) hsv).getChildAt(0);
+            ViewGroup strip = (ViewGroup) holder.getChildAt(0);
+            if (strip.getChildCount() > 0) {
+                // skip the empty-favorites hint if there's a real app below
+                View first = strip.getChildAt(0);
+                if ("fav:hint".equals(first.getTag()) && i + 1 < rowsBox.getChildCount()) continue;
+                first.requestFocus();
                 return;
             }
         }
@@ -848,40 +968,52 @@ public class MainActivity extends Activity {
 
     private String heroKey = "";
 
-    private void setHero(String name, String tag, String meta, int accent, Bitmap blur, TileView card) {
+    private void dockHero(String title, String meta) {
+        heroApp = null;
+        heroOpen = null;
+        setHero(title, "OVERDRIVE", meta, Ui.ACCENT, null, null, false, false);
+        actOpen.setVisibility(View.GONE);
+    }
+
+    private void setHero(String name, String eyebrow, String meta, int accent, Bitmap blur, TileView card, boolean isApp, boolean pinned) {
         currentAccent = accent;
-        String key = name + "|" + tag;
+        String key = name + "|" + eyebrow;
         boolean changed = !key.equals(heroKey);
         heroKey = key;
         if (!name.contentEquals(heroName.getText())) {
             heroName.setText(name);
             heroName.setAlpha(0f);
-            heroName.setTranslationX(dp(26));
-            heroName.animate().alpha(1f).translationX(0).setDuration(300).setInterpolator(EASE).start();
+            heroName.setTranslationY(dp(14));
+            heroName.animate().alpha(1f).translationY(0).setDuration(360).setInterpolator(Ui.EASE_OUT).start();
         }
-        heroTag.setText(tag);
-        heroTag.setTextColor(accent);
+        heroEyebrow.setText(eyebrow);
+        heroEyebrow.setTextColor(Themes.lerpColor(accent | 0xFF000000, Color.WHITE, 0.25f));
         heroMeta.setText(meta == null ? "" : meta);
-        if (changed && meta != null) {
+        if (changed) {
             heroMeta.setAlpha(0f);
-            heroMeta.animate().alpha(1f).setStartDelay(90).setDuration(260).start();
+            heroMeta.animate().alpha(1f).setStartDelay(80).setDuration(300).start();
         }
+        actOpen.setVisibility(heroOpen != null ? View.VISIBLE : View.GONE);
+        actOptions.setVisibility(isApp ? View.VISIBLE : View.GONE);
+        actPin.setVisibility(isApp ? View.VISIBLE : View.GONE);
+        actPin.setText(pinned ? "Pinned" : "Pin");
+        actPin.icon.setIcon(pinned ? "pinned" : "pin");
 
         if (card != null && changed) {
             heroCard.copyFrom(card);
-            heroCard.setVisibility(View.VISIBLE);
             heroCard.setAlpha(0f);
-            heroCard.setTranslationX(dp(40));
-            heroCard.animate().alpha(1f).translationX(0).setDuration(260).setInterpolator(EASE).start();
+            heroCard.setTranslationX(dp(34));
+            heroCard.setScaleX(0.96f);
+            heroCard.setScaleY(0.96f);
+            heroCard.animate().alpha(1f).translationX(0).scaleX(1f).scaleY(1f).setDuration(380).setInterpolator(Ui.EASE_OUT).start();
         } else if (card == null) {
             heroCard.animate().alpha(0f).setDuration(200).start();
         }
 
         if (changed) {
-            // wait until you settle on a tile so fast scrolling doesn't thrash the big backdrop
-            pendingBlur = blur;
+            pendingBlur = repo.prefs().getBoolean(SettingsHub.K_BACKDROP, true) ? blur : null;
             ui.removeCallbacks(backdropRunner);
-            ui.postDelayed(backdropRunner, 160);
+            ui.postDelayed(backdropRunner, 150);
         }
     }
 
@@ -892,45 +1024,113 @@ public class MainActivity extends Activity {
         ImageView in = backAOn ? backB : backA;
         ImageView out = backAOn ? backA : backB;
         backAOn = !backAOn;
-        out.animate().alpha(0f).setDuration(420).withEndAction(() -> { if (out.getAlpha() == 0f) out.setVisibility(View.INVISIBLE); }).start();
+        out.animate().alpha(0f).setDuration(500).withEndAction(() -> { if (out.getAlpha() == 0f) out.setVisibility(View.INVISIBLE); }).start();
         if (blur == null) return;
         BitmapDrawable bd = new BitmapDrawable(getResources(), blur);
         bd.setFilterBitmap(true);
         in.setImageDrawable(bd);
         in.setVisibility(View.VISIBLE);
-        in.animate().alpha(0.55f).setDuration(420).setInterpolator(EASE).start();
+        in.setScaleX(1.06f);
+        in.setScaleY(1.06f);
+        in.animate().alpha(0.62f).scaleX(1f).scaleY(1f).setDuration(900).setInterpolator(Ui.EASE_OUT).start();
     }
 
     // =====================================================================
-    // Launching
+    // Launching: the tile zooms to fill the screen, then the app opens
     // =====================================================================
 
-    private void launch(TileView t, String pkg) {
-        Intent i = repo.launchIntent(pkg);
+    private void launchApp(TileView from, Intent i, String pkg) {
         if (i == null) { showBanner("Can't open that app"); return; }
-        t.pulse();
+        if (launching) return;
+        launching = true;
         sound.play(Sound.SELECT);
         theme.select();
-        content.animate().withLayer().alpha(0f).scaleX(1.06f).scaleY(1.06f).setDuration(240)
+        if (from != null && from.isAttachedToWindow() && from.getWidth() > 0) {
+            int[] loc = new int[2];
+            from.getLocationOnScreen(loc);
+            int[] rl = new int[2];
+            root.getLocationOnScreen(rl);
+            TileView ghost = new TileView(this, 1f);
+            ghost.copyFrom(from);
+            ghost.setAlwaysLit();
+            ghost.setFocusable(false);
+            int w = from.getWidth(), h = from.getHeight();
+            FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(w, h);
+            launchLayer.removeAllViews();
+            launchLayer.addView(ghost, lp);
+            launchLayer.addView(launchFade, new FrameLayout.LayoutParams(-1, -1));
+            launchLayer.setVisibility(View.VISIBLE);
+            float cx = loc[0] - rl[0] + w / 2f, cy = loc[1] - rl[1] + h / 2f;
+            ghost.setTranslationX(cx - w / 2f);
+            ghost.setTranslationY(cy - h / 2f);
+            ghost.setScaleX(from.getScaleX());
+            ghost.setScaleY(from.getScaleY());
+            float target = Math.max((float) root.getWidth() / w, (float) root.getHeight() / h) * 1.08f;
+            ghost.animate().withLayer().translationX(root.getWidth() / 2f - w / 2f).translationY(root.getHeight() / 2f - h / 2f)
+                    .scaleX(target).scaleY(target).setDuration(420).setInterpolator(Ui.EASE).start();
+            launchFade.setAlpha(0f);
+            launchFade.animate().alpha(1f).setStartDelay(160).setDuration(300).start();
+        }
+        content.animate().withLayer().alpha(0f).scaleX(0.97f).scaleY(0.97f).setDuration(300)
                 .setInterpolator(new AccelerateInterpolator()).start();
         ui.postDelayed(() -> {
             try {
                 startActivity(i);
-                repo.markLaunched(pkg);
+                if (pkg != null) repo.markLaunched(pkg);
             } catch (Exception e) {
+                launching = false;
+                launchLayer.removeAllViews();
+                launchLayer.setVisibility(View.GONE);
                 content.animate().withLayer().alpha(1f).scaleX(1f).scaleY(1f).setDuration(200).start();
                 showBanner("Can't open that app");
             }
-        }, 230);
+        }, 440);
     }
 
-    private View focusBeforeHub;
+    private void togglePin(AppRepo.App a) {
+        List<String> f = repo.favorites();
+        boolean pinned = f.contains(a.pkg);
+        if (pinned) f.remove(a.pkg); else f.add(a.pkg);
+        repo.setFavorites(f);
+        sound.play(Sound.SELECT);
+        theme.select();
+        actPin.setText(pinned ? "Pin" : "Pinned");
+        actPin.icon.setIcon(pinned ? "pin" : "pinned");
+        showBanner(pinned ? a.label + " unpinned" : a.label + " pinned to Favorites");
+        View keep = getCurrentFocus();
+        reloadApps(false);
+        if (keep != null) keep.post(keep::requestFocus);
+    }
+
+    // =====================================================================
+    // Search & Settings
+    // =====================================================================
+
+    private void blockHome(boolean block) {
+        content.setDescendantFocusability(block ? ViewGroup.FOCUS_BLOCK_DESCENDANTS : ViewGroup.FOCUS_AFTER_DESCENDANTS);
+        content.animate().withLayer().alpha(block ? 0.0f : 1f).setDuration(240).start();
+    }
+
+    private void openSearch() {
+        if (search.isOpen()) return;
+        focusBeforeOverlay = getCurrentFocus();
+        blockHome(true);
+        search.show();
+    }
+
+    private void closeSearch() {
+        if (!search.isOpen()) return;
+        sound.play(Sound.BACK);
+        search.hide();
+        blockHome(false);
+        restoreHomeFocus();
+    }
 
     private void openSettings() {
         if (hub.isOpen()) return;
-        focusBeforeHub = getCurrentFocus();
-        content.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
-        content.animate().withLayer().alpha(0.25f).setDuration(250).start();
+        if (search.isOpen()) { search.hide(); }
+        else focusBeforeOverlay = getCurrentFocus();
+        blockHome(true);
         hub.show();
     }
 
@@ -938,86 +1138,34 @@ public class MainActivity extends Activity {
         if (!hub.isOpen()) return;
         sound.play(Sound.BACK);
         hub.hide();
-        content.setDescendantFocusability(ViewGroup.FOCUS_AFTER_DESCENDANTS);
-        content.animate().withLayer().alpha(1f).setDuration(250).start();
-        if (focusBeforeHub != null && focusBeforeHub.isAttachedToWindow()) focusBeforeHub.requestFocus();
-        else gear.requestFocus();
+        blockHome(false);
+        restoreHomeFocus();
     }
 
-    private void openOverdriveSetting(String which) {
+    private void restoreHomeFocus() {
+        if (focusBeforeOverlay != null && focusBeforeOverlay.isAttachedToWindow()) focusBeforeOverlay.requestFocus();
+        else dockSettings.requestFocus();
+    }
+
+    private void hubSub(String which) {
         switch (which) {
-            case "themes": showThemes(); break;
-            case "sounds": showSoundsPanel(); break;
-            case "saver": showSaverPanel(); break;
-            case "power": showPowerPanel(); break;
             case "hidden": showHiddenApps(); break;
             case "weather": showWeatherPanel(); break;
-            default: manualUpdateCheck();
+            case "weatherAuto":
+                Weather.clearPlace(repo.prefs());
+                showBanner("Weather set to automatic");
+                refreshWeather();
+                hub.refreshPane();
+                break;
+            case "guard": showGuardPanel(); break;
+            case "updates": manualUpdateCheck(); break;
+            case "intro": closeSettings(); ui.postDelayed(this::playIntro, 250); break;
+            case "saver": closeSettings(); ui.postDelayed(this::showSaver, 350); break;
+            default: break;
         }
     }
 
-    private void showSoundsPanel() {
-        boolean on = sound.on();
-        List<Item> items = new ArrayList<>();
-        items.add(new Item(on ? "Turn sounds off" : "Turn sounds on", on ? "Clicks, chimes and whooshes are on" : "Sounds are muted", () -> {
-            repo.prefs().edit().putBoolean(Sound.KEY_SOUNDS, !on).apply();
-            if (!on) sound.play(Sound.SELECT);
-            showSoundsPanel();
-        }));
-        showPanel("Sounds", "Console-style sounds as you move and select", items, null);
-    }
-
-    private void showSaverPanel() {
-        int cur = repo.prefs().getInt(KEY_SAVER, 3);
-        int[] opts = {2, 3, 5, 10, 0};
-        List<Item> items = new ArrayList<>();
-        for (int i = 0; i < opts.length; i++) {
-            final int m = opts[i];
-            if (m == cur) panelFocusIndex = i;
-            items.add(new Item((m == 0 ? "Off" : "After " + m + " minutes") + (m == cur ? "  ✓" : ""), null, () -> {
-                repo.prefs().edit().putInt(KEY_SAVER, m).apply();
-                showBanner(m == 0 ? "Screensaver off" : "Screensaver after " + m + " min");
-                closePanel(true);
-            }));
-        }
-        items.add(new Item("Preview now", "Any button brings you back", () -> { closePanel(false); closeSettings(); ui.postDelayed(this::showSaver, 400); }));
-        showPanel("Screensaver", "Big clock and weather over your theme when the TV sits idle", items, null);
-    }
-
-    private void showPowerPanel() {
-        boolean openOnStart = repo.prefs().getBoolean(BootReceiver.KEY_OPEN_ON_START, true);
-        boolean introOn = repo.prefs().getBoolean(KEY_INTRO, true);
-        boolean ready = WakeService.canLaunchFromBackground(this);
-        List<Item> items = new ArrayList<>();
-        items.add(new Item("Open when TV turns on", openOnStart ? "On" : "Off", () -> {
-            repo.prefs().edit().putBoolean(BootReceiver.KEY_OPEN_ON_START, !openOnStart).apply();
-            if (!openOnStart) WakeService.start(this);
-            showPowerPanel();
-        }));
-        items.add(new Item("Startup intro", introOn ? "On" : "Off", () -> {
-            repo.prefs().edit().putBoolean(KEY_INTRO, !introOn).apply();
-            showPowerPanel();
-        }));
-        boolean guardOn = HomeGuardService.isEnabled(this);
-        items.add(new Item("Back & Home guard", guardOn ? "On  ·  fastest and most reliable" : "Off  ·  set up once from your phone", this::showGuardPanel));
-        if (!ready) {
-            items.add(new Item("Allow display over other apps", "Lets Overdrive open itself at power-up", () -> {
-                try {
-                    startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                            Uri.parse("package:" + getPackageName())).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
-                } catch (Exception e) {
-                    showGuardPanel(); // Fire TV hides this screen; the phone setup covers it
-                }
-            }));
-        }
-        items.add(new Item("Try it", "Shows the intro the way power-up will", () -> { closePanel(false); closeSettings(); playIntro(); }));
-        showPanel("Power-up", ready
-                ? "Ready. Overdrive opens by itself when the TV turns on or wakes up, so you don't need the Launch on Boot app."
-                : "Overdrive opens itself after a restart. To also open when the TV wakes from standby, finish the one-time phone setup in Back & Home guard.",
-                items, null);
-    }
-
-    private void openSettings(String action) {
+    private void openSystemSettings(String action) {
         try {
             startActivity(new Intent(action).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         } catch (Exception e) {
@@ -1034,8 +1182,7 @@ public class MainActivity extends Activity {
         for (Intent i : tries) {
             if (i == null) continue;
             try {
-                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                startActivity(i);
+                startActivity(i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
                 return;
             } catch (Exception ignored) { }
         }
@@ -1052,7 +1199,7 @@ public class MainActivity extends Activity {
         intro.play(currentAccent, () -> {
             content.setScaleX(0.96f);
             content.setScaleY(0.96f);
-            content.animate().withLayer().alpha(1f).scaleX(1f).scaleY(1f).setDuration(500).setInterpolator(EASE).start();
+            content.animate().withLayer().alpha(1f).scaleX(1f).scaleY(1f).setDuration(560).setInterpolator(Ui.EASE_OUT).start();
         });
     }
 
@@ -1062,19 +1209,16 @@ public class MainActivity extends Activity {
         saverBox = new LinearLayout(this);
         saverBox.setOrientation(LinearLayout.VERTICAL);
         saverBox.setGravity(Gravity.CENTER_HORIZONTAL);
-        saverTime = text(96, C_TEXT, "sans-serif-thin", Typeface.NORMAL);
-        saverTime.setIncludeFontPadding(true);
+        saverTime = Ui.text(this, 104, Ui.TEXT, Ui.display(this, 300));
         saverTime.setSingleLine(true);
         saverTime.setShadowLayer(dp(20), 0, 0, Color.argb(160, 0, 0, 0));
-        saverDate = text(18, Color.argb(220, 255, 255, 255), "sans-serif-light", Typeface.NORMAL);
-        saverDate.setLetterSpacing(0.08f);
-        saverWeather = text(15, Color.argb(200, 255, 255, 255), "sans-serif", Typeface.NORMAL);
+        saverDate = Ui.text(this, 17, Color.argb(220, 255, 255, 255), Ui.body(this, true));
+        saverDate.setLetterSpacing(0.18f);
+        saverWeather = Ui.text(this, 15, Ui.SUB, Ui.body(this, false));
         saverBox.addView(saverTime);
-        LinearLayout.LayoutParams dl = new LinearLayout.LayoutParams(-2, -2);
-        dl.topMargin = dp(10);
-        saverBox.addView(saverDate, dl);
+        saverBox.addView(saverDate);
         LinearLayout.LayoutParams wl = new LinearLayout.LayoutParams(-2, -2);
-        wl.topMargin = dp(16);
+        wl.topMargin = dp(14);
         saverBox.addView(saverWeather, wl);
         saver.addView(saverBox, new FrameLayout.LayoutParams(-2, -2, Gravity.CENTER));
         root.addView(saver, new FrameLayout.LayoutParams(-1, -1));
@@ -1082,9 +1226,9 @@ public class MainActivity extends Activity {
 
     private final Runnable saverCheck = new Runnable() {
         @Override public void run() {
-            int mins = repo.prefs().getInt(KEY_SAVER, 3);
+            int mins = repo.prefs().getInt(SettingsHub.K_SAVER, 3);
             if (mins > 0 && saver.getVisibility() != View.VISIBLE && hasWindowFocus()
-                    && overlay.getVisibility() != View.VISIBLE && !intro.isPlaying() && !hub.isOpen()
+                    && overlay.getVisibility() != View.VISIBLE && !intro.isPlaying() && !hub.isOpen() && !search.isOpen()
                     && System.currentTimeMillis() - lastInteraction > mins * 60_000L) {
                 showSaver();
             }
@@ -1125,7 +1269,8 @@ public class MainActivity extends Activity {
         saverBox.animate().cancel();
         saver.animate().alpha(0f).setDuration(300).withEndAction(() -> saver.setVisibility(View.GONE)).start();
         content.animate().withLayer().alpha(1f).setDuration(400).start();
-        (backAOn ? backA : backB).animate().alpha(0.55f).setDuration(400).start();
+        ImageView on = backAOn ? backA : backB;
+        if (on.getVisibility() == View.VISIBLE) on.animate().alpha(0.62f).setDuration(400).start();
         return true;
     }
 
@@ -1147,8 +1292,8 @@ public class MainActivity extends Activity {
                     boolean animate = !lastClock.isEmpty();
                     lastClock = key;
                     android.text.SpannableString sp = new android.text.SpannableString(t + " " + ap);
-                    sp.setSpan(new android.text.style.RelativeSizeSpan(0.42f), t.length(), sp.length(), 0);
-                    sp.setSpan(new android.text.style.ForegroundColorSpan(C_SUB), t.length(), sp.length(), 0);
+                    sp.setSpan(new android.text.style.RelativeSizeSpan(0.55f), t.length(), sp.length(), 0);
+                    sp.setSpan(new android.text.style.ForegroundColorSpan(Ui.SUB), t.length(), sp.length(), 0);
                     clockTime.setText(sp);
                     if (animate) {
                         clockTime.setAlpha(0.3f);
@@ -1175,8 +1320,7 @@ public class MainActivity extends Activity {
                     lastWeatherLine = r.icon + "  " + r.temp + "°  " + r.desc + (r.place.isEmpty() ? "" : "  ·  " + r.place);
                     weatherIcon.setScaleX(0.4f);
                     weatherIcon.setScaleY(0.4f);
-                    weatherIcon.animate().scaleX(1f).scaleY(1f)
-                            .setInterpolator(new OvershootInterpolator(2.5f)).setDuration(450).start();
+                    weatherIcon.animate().scaleX(1f).scaleY(1f).setInterpolator(Ui.SPRING).setDuration(450).start();
                 });
             } catch (Exception e) {
                 ui.post(() -> {
@@ -1191,107 +1335,31 @@ public class MainActivity extends Activity {
     private final Runnable weatherLoop = this::refreshWeather;
 
     // =====================================================================
-    // Menus
+    // Side panels (app options, hidden apps, weather, guard, updates)
     // =====================================================================
 
     private static class Item {
         final String label, hint;
         final Runnable action;
-        Runnable onFocus;
         Item(String l, String h, Runnable a) { label = l; hint = h; action = a; }
-        Item focus(Runnable r) { onFocus = r; return this; }
-    }
-
-    private void showMainMenu() {
-        List<Item> items = new ArrayList<>();
-        items.add(new Item("Themes", Themes.name(theme.themeId()) + "  ·  live preview", this::showThemes));
-        boolean snd = sound.on();
-        items.add(new Item("Sounds", snd ? "On" : "Off", () -> {
-            repo.prefs().edit().putBoolean(Sound.KEY_SOUNDS, !snd).apply();
-            if (!snd) sound.play(Sound.SELECT);
-            showMainMenu();
-        }));
-        boolean introOn = repo.prefs().getBoolean(KEY_INTRO, true);
-        items.add(new Item("Startup intro", introOn ? "On  ·  plays when the TV turns on" : "Off", () -> {
-            repo.prefs().edit().putBoolean(KEY_INTRO, !introOn).apply();
-            showMainMenu();
-        }));
-        int mins = repo.prefs().getInt(KEY_SAVER, 3);
-        items.add(new Item("Screensaver", mins == 0 ? "Off" : "After " + mins + " min idle", () -> {
-            int next = mins == 0 ? 2 : mins == 2 ? 3 : mins == 3 ? 5 : mins == 5 ? 10 : 0;
-            repo.prefs().edit().putInt(KEY_SAVER, next).apply();
-            showMainMenu();
-        }));
-        boolean guardOn = HomeGuardService.isEnabled(this) && repo.prefs().getBoolean(HomeGuardService.KEY_GUARD_ON, true);
-        items.add(new Item("Back & Home guard", guardOn ? "On" : "Off  ·  Back can drop you on Amazon's home", this::showGuardPanel));
-        boolean openOnStart = repo.prefs().getBoolean(BootReceiver.KEY_OPEN_ON_START, true);
-        items.add(new Item("Open when TV turns on", openOnStart
-                ? (HomeGuardService.isEnabled(this) ? "On" : "On  ·  needs the guard to work from standby") : "Off", () -> {
-            repo.prefs().edit().putBoolean(BootReceiver.KEY_OPEN_ON_START, !openOnStart).apply();
-            showMainMenu();
-        }));
-        int hiddenCount = repo.hidden().size();
-        items.add(new Item("Hidden apps", hiddenCount == 0 ? "None hidden" : hiddenCount + " hidden", this::showHiddenApps));
-        items.add(new Item("Weather location", repo.prefs().getString(Weather.KEY_NAME, "Automatic"), this::showWeatherPanel));
-        items.add(new Item(pendingRelease != null ? "Install update" : "Check for updates",
-                pendingRelease != null ? "Version " + pendingRelease.version + " is ready" : "You're on " + BuildConfig.VERSION_NAME,
-                this::manualUpdateCheck));
-        items.add(new Item("Fire TV settings", "Network, display, apps", () -> { closePanel(true); openFireSettings(); }));
-        showPanel("Menu", "Overdrive " + BuildConfig.VERSION_NAME, items, null);
-    }
-
-    private void showThemes() {
-        final String original = theme.themeId();
-        final boolean[] chosen = {false};
-        List<Item> items = new ArrayList<>();
-        for (int i = 0; i < Themes.IDS.length; i++) {
-            final String id = Themes.IDS[i];
-            items.add(new Item(Themes.NAMES[i] + (id.equals(original) ? "  ✓" : ""), Themes.BLURBS[i], () -> {
-                chosen[0] = true;
-                repo.prefs().edit().putString(KEY_THEME, id).apply();
-                theme.select();
-                showBanner(Themes.name(id) + " theme on");
-                closePanel(true);
-            }).focus(() -> {
-                if (!id.equals(theme.themeId())) {
-                    theme.setTheme(id);
-                    theme.setAccent(currentAccent);
-                    sound.play(Sound.THEME);
-                }
-            }));
-        }
-        for (int i = 0; i < Themes.IDS.length; i++) if (Themes.IDS[i].equals(original)) panelFocusIndex = i;
-        showPanel("Themes", "Move up and down to try them live. OK keeps it.", items, null);
-        scrim.animate().alpha(0.25f).setDuration(250).start(); // let the theme shine through while choosing
-        panelOnClose = () -> {
-            if (!chosen[0] && !original.equals(theme.themeId())) theme.setTheme(original);
-        };
     }
 
     private void showAppMenu(AppRepo.App a, TileView t, String rowKey) {
         sound.play(Sound.OPEN);
         boolean isHidden = repo.hidden().contains(a.pkg);
-        List<String> favs = repo.favorites();
-        boolean pinned = favs.contains(a.pkg);
+        boolean pinned = repo.favorites().contains(a.pkg);
         List<Item> items = new ArrayList<>();
-        items.add(new Item("Open", null, () -> { closePanel(false); launch(t, a.pkg); }));
+        items.add(new Item("Open", null, () -> { closePanel(false); launchApp(t, repo.launchIntent(a.pkg), a.pkg); }));
         items.add(new Item(pinned ? "Unpin from Favorites" : "Pin to Favorites", pinned ? null : "Adds it to the top row", () -> {
-            List<String> f = repo.favorites();
-            if (pinned) f.remove(a.pkg); else f.add(a.pkg);
-            repo.setFavorites(f);
             closePanel(true);
-            showBanner(pinned ? a.label + " unpinned" : a.label + " pinned to Favorites");
-            reloadApps(false);
+            togglePin(a);
         }));
         if (pinned && "fav".equals(rowKey)) {
-            items.add(new Item("Move", "Use ◀ ▶ to slide it, OK to drop", () -> {
-                closePanel(false);
-                startMove(a.pkg, t);
-            }));
+            items.add(new Item("Move", "Use ◀ ▶ to slide it, OK to drop", () -> { closePanel(false); startMove(a.pkg, t); }));
         }
         items.add(new Item("Move to category", "Now in " + cats.of(a.pkg), () -> showCategoryPicker(a)));
         items.add(new Item(isHidden ? "Unhide" : "Hide app",
-                isHidden ? "Put it back in your library" : "Only shows up in Menu → Hidden apps", () -> {
+                isHidden ? "Put it back in your library" : "Only shows up in Settings → Privacy", () -> {
             repo.setHidden(a.pkg, !isHidden);
             if (!isHidden) { List<String> f = repo.favorites(); f.remove(a.pkg); repo.setFavorites(f); }
             closePanel(true);
@@ -1313,7 +1381,9 @@ public class MainActivity extends Activity {
     private void showCategoryPicker(AppRepo.App a) {
         List<Item> items = new ArrayList<>();
         String now = cats.of(a.pkg);
-        for (String c : Categories.ORDER) {
+        for (int i = 0; i < Categories.ORDER.length; i++) {
+            String c = Categories.ORDER[i];
+            if (c.equals(now)) panelFocusIndex = i;
             items.add(new Item(c + (c.equals(now) ? "  ✓" : ""), null, () -> {
                 cats.set(a.pkg, c);
                 closePanel(true);
@@ -1324,13 +1394,11 @@ public class MainActivity extends Activity {
         showPanel("Move to category", a.label, items, null);
     }
 
-    // ---- favorites move mode ----
-
     private void startMove(String pkg, TileView t) {
         movingPkg = pkg;
         movingTile = t;
         t.requestFocus();
-        t.animate().translationY(-dp(10)).scaleX(1.2f).scaleY(1.2f).setDuration(220).setInterpolator(EASE).start();
+        t.animate().translationY(-dp(10)).scaleX(1.2f).scaleY(1.2f).setDuration(220).setInterpolator(Ui.EASE).start();
         bob(t);
         showBanner("◀ ▶ to move  ·  OK to drop");
     }
@@ -1354,12 +1422,11 @@ public class MainActivity extends Activity {
         movingTile.requestFocus();
         List<String> f = repo.favorites();
         if (f.remove(movingPkg)) {
-            int to = Math.max(0, Math.min(f.size(), j));
-            f.add(to, movingPkg);
+            f.add(Math.max(0, Math.min(f.size(), j)), movingPkg);
             repo.setFavorites(f);
         }
-        Strip hs = (Strip) strip.getParent();
-        movingTile.post(() -> hs.smoothScrollTo(Math.max(0, movingTile.getLeft() - dp(200)), 0));
+        TileView t = movingTile;
+        t.post(() -> { if (t.getParent() != null) onTileFocused(t); });
     }
 
     private void endMove() {
@@ -1370,10 +1437,10 @@ public class MainActivity extends Activity {
         t.animate().cancel();
         t.setRotation(0);
         t.animate().translationY(0).scaleX(t.isFocused() ? 1.1f : 1f).scaleY(t.isFocused() ? 1.1f : 1f)
-                .setDuration(240).setInterpolator(new OvershootInterpolator(2f)).start();
+                .setDuration(240).setInterpolator(Ui.SPRING).start();
         sound.play(Sound.SELECT);
         theme.select();
-        lastSignature = ""; // let the next reload pick up the new order
+        lastSignature = "";
     }
 
     private void showHiddenApps() {
@@ -1386,8 +1453,7 @@ public class MainActivity extends Activity {
                 showAppMenu(a, dummy, "hidden");
             }));
         }
-        showPanel("Hidden apps", items.isEmpty() ? "Nothing hidden. Press ☰ on any app to hide it." : "Only you know these are here",
-                items, null);
+        showPanel("Hidden apps", items.isEmpty() ? "Nothing hidden. Press ☰ on any app to hide it." : "Only you know these are here", items, null);
     }
 
     private void showGuardPanel() {
@@ -1395,12 +1461,12 @@ public class MainActivity extends Activity {
         boolean on = repo.prefs().getBoolean(HomeGuardService.KEY_GUARD_ON, true);
         List<Item> items = new ArrayList<>();
         if (!enabled) {
-            items.add(new Item("Check again", "After running the command from your phone", () -> {
+            items.add(new Item("Check again", "After running the commands from your phone", () -> {
                 repo.prefs().edit().putBoolean(HomeGuardService.KEY_GUARD_ON, true).apply();
                 if (HomeGuardService.isEnabled(this)) { showBanner("Guard is on"); closePanel(true); }
                 else showBanner("Not on yet");
             }));
-            items.add(new Item("Open Developer options", "Turn on ADB debugging", this::openFireSettings));
+            items.add(new Item("Open Fire TV settings", "My Fire TV → Developer options → ADB debugging", this::openFireSettings));
             items.add(new Item("Later", null, () -> closePanel(true)));
             showPanel("Back & Home guard",
                     "Fire TV hides this switch, so it's turned on once from your phone:\n\n"
@@ -1423,7 +1489,7 @@ public class MainActivity extends Activity {
 
     private void maybePromptGuard() {
         if (HomeGuardService.isEnabled(this) || repo.prefs().getBoolean("guard_prompted", false)) return;
-        if (overlay.getVisibility() == View.VISIBLE || intro.isPlaying()) return;
+        if (overlay.getVisibility() == View.VISIBLE || intro.isPlaying() || hub.isOpen() || search.isOpen()) return;
         repo.prefs().edit().putBoolean("guard_prompted", true).apply();
         showGuardPanel();
     }
@@ -1435,16 +1501,17 @@ public class MainActivity extends Activity {
         et.setImeOptions(EditorInfo.IME_ACTION_DONE);
         et.setHint("City or ZIP code");
         et.setText(repo.prefs().getString(Weather.KEY_PLACE, ""));
-        et.setTextColor(C_TEXT);
-        et.setHintTextColor(C_SUB);
+        et.setTextColor(Ui.TEXT);
+        et.setHintTextColor(Ui.FAINT);
+        et.setTypeface(Ui.body(this, false));
         et.setTextSize(16);
         et.setPadding(dp(16), dp(12), dp(16), dp(12));
         final GradientDrawable eb = new GradientDrawable();
-        eb.setCornerRadius(dp(10));
+        eb.setCornerRadius(dp(12));
         eb.setColor(Color.argb(40, 255, 255, 255));
         eb.setStroke(dp(2), Color.argb(70, 255, 255, 255));
         et.setBackground(eb);
-        et.setOnFocusChangeListener((v, has) -> eb.setStroke(dp(2), has ? currentAccent : Color.argb(70, 255, 255, 255)));
+        et.setOnFocusChangeListener((v, has) -> eb.setStroke(dp(2), has ? Ui.ACCENT : Color.argb(70, 255, 255, 255)));
         Runnable save = () -> {
             String q = et.getText().toString().trim();
             hideKeyboard(et);
@@ -1483,33 +1550,28 @@ public class MainActivity extends Activity {
             focusBeforePanel = getCurrentFocus();
             content.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
             hub.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
-        } else if (panelOnClose != null) {
-            Runnable r = panelOnClose;
-            panelOnClose = null;
-            r.run();
+            search.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
         }
         panel.removeAllViews();
         panel.setBackground(new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT,
-                new int[]{Color.argb(240, 14, 18, 32), Color.argb(250, 8, 10, 20)}));
+                new int[]{Color.argb(242, 12, 15, 28), Color.argb(250, 7, 9, 18)}));
 
         View bar = new View(this);
-        GradientDrawable bd = new GradientDrawable();
-        bd.setCornerRadius(dp(2));
-        bd.setColor(currentAccent);
-        bar.setBackground(bd);
+        bar.setBackground(Ui.solid(this, currentAccent | 0xFF000000, 2));
         panel.addView(bar, new LinearLayout.LayoutParams(dp(36), dp(4)));
-
-        TextView t = text(24, C_TEXT, "sans-serif", Typeface.BOLD);
+        TextView t = Ui.text(this, 26, Ui.TEXT, Ui.display(this, 700));
         t.setText(title);
+        t.setSingleLine(true);
+        t.setEllipsize(TextUtils.TruncateAt.END);
         LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(-1, -2);
         tlp.topMargin = dp(16);
         panel.addView(t, tlp);
         if (subtitle != null) {
-            TextView s = text(11, C_SUB, "sans-serif", Typeface.NORMAL);
+            TextView s = Ui.text(this, 12, Ui.SUB, Ui.body(this, false));
             s.setText(subtitle);
             s.setLineSpacing(dp(3), 1f);
             LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(-1, -2);
-            slp.topMargin = dp(8);
+            slp.topMargin = dp(6);
             slp.bottomMargin = dp(18);
             panel.addView(s, slp);
         }
@@ -1518,7 +1580,6 @@ public class MainActivity extends Activity {
             elp.bottomMargin = dp(14);
             panel.addView(extra, elp);
         }
-
         ScrollView sv = new ScrollView(this);
         sv.setVerticalScrollBarEnabled(false);
         noClip(sv);
@@ -1539,10 +1600,9 @@ public class MainActivity extends Activity {
             if (first == null || i == want) first = row;
             row.setAlpha(0f);
             row.setTranslationX(dp(30));
-            row.animate().withLayer().alpha(1f).translationX(0).setStartDelay(70 + i * 40L).setDuration(300).setInterpolator(EASE).start();
+            row.animate().withLayer().alpha(1f).translationX(0).setStartDelay(60 + i * 40L).setDuration(320).setInterpolator(Ui.EASE_OUT).start();
         }
-
-        TextView hint = text(10, C_SUB, "sans-serif", Typeface.NORMAL);
+        TextView hint = Ui.text(this, 11, Ui.FAINT, Ui.body(this, false));
         hint.setText("BACK to close");
         hint.setLetterSpacing(0.15f);
         panel.addView(hint);
@@ -1551,10 +1611,9 @@ public class MainActivity extends Activity {
             overlay.setVisibility(View.VISIBLE);
             scrim.setAlpha(0f);
             scrim.animate().alpha(1f).setDuration(250).start();
-            panel.setTranslationX(dp(400));
-            panel.animate().translationX(0).setDuration(340).setInterpolator(EASE).start();
+            panel.setTranslationX(dp(420));
+            panel.animate().translationX(0).setDuration(360).setInterpolator(Ui.EASE_OUT).start();
         } else {
-            scrim.animate().alpha(1f).setDuration(200).start();
             panel.setAlpha(0.4f);
             panel.animate().alpha(1f).setDuration(200).start();
         }
@@ -1565,32 +1624,28 @@ public class MainActivity extends Activity {
     private View panelRow(Item it) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.VERTICAL);
-        row.setPadding(dp(16), dp(12), dp(16), dp(12));
+        row.setPadding(dp(18), dp(13), dp(18), dp(13));
         row.setFocusable(true);
         row.setClickable(true);
         final GradientDrawable rb = new GradientDrawable();
-        rb.setCornerRadius(dp(10));
-        rb.setColor(Color.TRANSPARENT);
+        rb.setCornerRadius(dp(14));
+        rb.setColor(Color.argb(14, 255, 255, 255));
         row.setBackground(rb);
-        TextView l = text(15, C_TEXT, "sans-serif-medium", Typeface.NORMAL);
+        TextView l = Ui.text(this, 15, Ui.TEXT, Ui.body(this, true));
         l.setText(it.label);
         row.addView(l);
         TextView h = null;
         if (it.hint != null) {
-            h = text(10.5f, C_SUB, "sans-serif", Typeface.NORMAL);
+            h = Ui.text(this, 12, Ui.SUB, Ui.body(this, false));
             h.setText(it.hint);
-            LinearLayout.LayoutParams hlp = new LinearLayout.LayoutParams(-2, -2);
-            hlp.topMargin = dp(4);
-            row.addView(h, hlp);
+            row.addView(h);
         }
         final TextView hint = h;
         row.setOnFocusChangeListener((v, has) -> {
-            rb.setColor(has ? Color.WHITE : Color.TRANSPARENT);
-            l.setTextColor(has ? Color.parseColor("#0A0F1F") : C_TEXT);
-            if (hint != null) hint.setTextColor(has ? Color.parseColor("#4A5570") : C_SUB);
-            v.animate().translationX(has ? dp(6) : 0).scaleX(has ? 1.03f : 1f).scaleY(has ? 1.03f : 1f)
-                    .setDuration(180).start();
-            if (has && it.onFocus != null) it.onFocus.run();
+            rb.setColor(has ? Color.WHITE : Color.argb(14, 255, 255, 255));
+            l.setTextColor(has ? Ui.INK : Ui.TEXT);
+            if (hint != null) hint.setTextColor(has ? Color.argb(170, 10, 13, 24) : Ui.SUB);
+            v.animate().scaleX(has ? 1.03f : 1f).scaleY(has ? 1.03f : 1f).setDuration(180).setInterpolator(Ui.EASE).start();
         });
         row.setOnClickListener(v -> { sound.play(Sound.SELECT); it.action.run(); });
         return row;
@@ -1598,17 +1653,18 @@ public class MainActivity extends Activity {
 
     private void closePanel(boolean animate) {
         if (overlay.getVisibility() != View.VISIBLE) return;
-        if (panelOnClose != null) { Runnable r = panelOnClose; panelOnClose = null; r.run(); }
         Runnable done = () -> {
             overlay.setVisibility(View.GONE);
             hub.setDescendantFocusability(ViewGroup.FOCUS_AFTER_DESCENDANTS);
-            if (!hub.isOpen()) content.setDescendantFocusability(ViewGroup.FOCUS_AFTER_DESCENDANTS);
-            if (focusBeforePanel != null && focusBeforePanel.isAttachedToWindow()) focusBeforePanel.requestFocus();
+            search.setDescendantFocusability(ViewGroup.FOCUS_AFTER_DESCENDANTS);
+            if (!hub.isOpen() && !search.isOpen()) content.setDescendantFocusability(ViewGroup.FOCUS_AFTER_DESCENDANTS);
+            if (hub.isOpen()) hub.refreshPane();
+            else if (focusBeforePanel != null && focusBeforePanel.isAttachedToWindow()) focusBeforePanel.requestFocus();
             else focusFirstTile();
         };
         if (!animate) { done.run(); return; }
         scrim.animate().alpha(0f).setDuration(200).start();
-        panel.animate().translationX(dp(400)).setDuration(240).setInterpolator(new AccelerateInterpolator())
+        panel.animate().translationX(dp(420)).setDuration(240).setInterpolator(new AccelerateInterpolator())
                 .withEndAction(done).start();
     }
 
@@ -1631,7 +1687,7 @@ public class MainActivity extends Activity {
                 if (r != null) ui.post(() -> {
                     pendingRelease = r;
                     updateDot.setVisibility(View.VISIBLE);
-                    if (overlay.getVisibility() == View.VISIBLE || intro.isPlaying()) return;
+                    if (overlay.getVisibility() == View.VISIBLE || intro.isPlaying() || hub.isOpen() || search.isOpen()) return;
                     showBanner("Updating to " + r.version + "…");
                     startInstall(r);
                 });
@@ -1658,7 +1714,7 @@ public class MainActivity extends Activity {
 
     private void showUpdatePanel(Updater.Release r) {
         String notes = r.notes == null ? "" : r.notes.trim();
-        if (notes.length() > 220) notes = notes.substring(0, 220) + "…";
+        if (notes.length() > 240) notes = notes.substring(0, 240) + "…";
         List<Item> items = new ArrayList<>();
         items.add(new Item("Install now", "Downloads and asks the TV to install", () -> startInstall(r)));
         items.add(new Item("Later", null, () -> closePanel(true)));
@@ -1715,8 +1771,7 @@ public class MainActivity extends Activity {
             banner.setAlpha(0f);
             banner.setTranslationY(-dp(30));
         }
-        banner.animate().alpha(1f).translationY(0).setInterpolator(new OvershootInterpolator(1.5f))
-                .setDuration(320).start();
+        banner.animate().alpha(1f).translationY(0).setInterpolator(Ui.SPRING).setDuration(340).start();
         ui.postDelayed(hideBanner, 3500);
     }
 
@@ -1731,49 +1786,42 @@ public class MainActivity extends Activity {
         boolean up = event.getAction() == KeyEvent.ACTION_UP;
         lastInteraction = System.currentTimeMillis();
 
-        // intro: any key skips ahead
+        if (launching) return code != KeyEvent.KEYCODE_HOME;
         if (intro.isPlaying()) {
             if (down && code != KeyEvent.KEYCODE_HOME) intro.skip();
             return code != KeyEvent.KEYCODE_HOME;
         }
-        // screensaver: any key wakes the dashboard and is swallowed
         if (saver.getVisibility() == View.VISIBLE) {
             if (down) hideSaver();
             return true;
         }
-        // favorites move mode
         if (movingTile != null) {
             if (down) {
                 if (code == KeyEvent.KEYCODE_DPAD_LEFT) stepMove(-1);
                 else if (code == KeyEvent.KEYCODE_DPAD_RIGHT) stepMove(1);
-                else if (code == KeyEvent.KEYCODE_DPAD_CENTER || code == KeyEvent.KEYCODE_ENTER
-                        || code == KeyEvent.KEYCODE_BACK) endMove();
+                else if (code == KeyEvent.KEYCODE_DPAD_CENTER || code == KeyEvent.KEYCODE_ENTER || code == KeyEvent.KEYCODE_BACK) endMove();
             }
             return true;
         }
 
-        if (hub.isOpen() && overlay.getVisibility() != View.VISIBLE) {
-            if (hub.handleKey(event)) return true;
-            if (code == KeyEvent.KEYCODE_BACK) {
-                if (up && !event.isCanceled()) closeSettings();
-                return true;
-            }
-            if (code == KeyEvent.KEYCODE_MENU) return true;
-        }
-
+        boolean panelOpen = overlay.getVisibility() == View.VISIBLE;
         if (code == KeyEvent.KEYCODE_BACK) {
             View f = getCurrentFocus();
             if (f instanceof EditText && up) hideKeyboard(f);
             if (up && !event.isCanceled()) {
-                if (overlay.getVisibility() == View.VISIBLE) { sound.play(Sound.BACK); closePanel(true); }
-                else { sound.play(Sound.BACK); scroll.smoothScrollTo(0, 0); focusFirstTile(); }
+                if (panelOpen) { sound.play(Sound.BACK); closePanel(true); }
+                else if (hub.isOpen()) { if (!hub.back()) closeSettings(); }
+                else if (search.isOpen()) closeSearch();
+                else { sound.play(Sound.BACK); scroll.scrollTo(0, 0); focusFirstTile(); }
             }
             return true;
         }
 
         if (down && isDpad(code)) {
             View f = getCurrentFocus();
-            if (f != null && !(f instanceof EditText)) {
+            boolean valueRow = f != null && f.getTag(R.id.value_row) != null
+                    && (code == KeyEvent.KEYCODE_DPAD_LEFT || code == KeyEvent.KEYCODE_DPAD_RIGHT);
+            if (f != null && !(f instanceof EditText) && !valueRow) {
                 int dir = code == KeyEvent.KEYCODE_DPAD_LEFT ? View.FOCUS_LEFT
                         : code == KeyEvent.KEYCODE_DPAD_RIGHT ? View.FOCUS_RIGHT
                         : code == KeyEvent.KEYCODE_DPAD_UP ? View.FOCUS_UP : View.FOCUS_DOWN;
@@ -1791,12 +1839,15 @@ public class MainActivity extends Activity {
             }
         }
 
-        if (up && code == KeyEvent.KEYCODE_MENU && overlay.getVisibility() != View.VISIBLE
-                && !(getCurrentFocus() instanceof TileView && byPkgFromFocus() != null)) {
-            sound.play(Sound.OPEN);
-            showMainMenu();
-            return true;
+        if (code == KeyEvent.KEYCODE_MENU && !panelOpen && !hub.isOpen() && !search.isOpen()) {
+            View f = getCurrentFocus();
+            boolean appTile = f instanceof TileView && byPkgFromFocus() != null;
+            if (!appTile) {
+                if (up) { sound.play(Sound.OPEN); openSettings(); }
+                return true;
+            }
         }
+        if (code == KeyEvent.KEYCODE_SEARCH && up && !panelOpen && !hub.isOpen()) { openSearch(); return true; }
         return super.dispatchKeyEvent(event);
     }
 
