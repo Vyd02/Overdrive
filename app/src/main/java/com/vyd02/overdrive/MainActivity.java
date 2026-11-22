@@ -138,6 +138,8 @@ public class MainActivity extends Activity {
         d = getResources().getDisplayMetrics().density;
         buildUi();
         setContentView(root);
+        // Fire TV plays its own click when something is selected; turn that off everywhere in Sora
+        root.getViewTreeObserver().addOnGlobalLayoutListener(() -> muteSystemSounds(root));
         showSkeleton();
         reloadApps(true);
         startClock();
@@ -1938,8 +1940,11 @@ public class MainActivity extends Activity {
                     float sx = lastDx * dp(6), sy = lastDy * dp(6);
                     f.animate().translationX(sx).translationY(sy).setDuration(70)
                             .withEndAction(() -> f.animate().translationX(0).translationY(0).setDuration(140).start()).start();
+                    return true; // nowhere to go: don't let the system click either
                 } else {
                     sound.play(Sound.MOVE);
+                    // Moving focus here (instead of letting Android do it) keeps Fire TV's click silent
+                    if (next.requestFocus(dir)) return true;
                 }
             }
         }
@@ -1998,6 +2003,14 @@ public class MainActivity extends Activity {
             if (best != null) return best;
         }
         return null;
+    }
+
+    private static void muteSystemSounds(View v) {
+        v.setSoundEffectsEnabled(false);
+        if (v instanceof ViewGroup) {
+            ViewGroup g = (ViewGroup) v;
+            for (int i = 0; i < g.getChildCount(); i++) muteSystemSounds(g.getChildAt(i));
+        }
     }
 
     private AppRepo.App byPkgFromFocus() {

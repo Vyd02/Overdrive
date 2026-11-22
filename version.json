@@ -1,6 +1,6 @@
 {
-  "versionCode": 18,
-  "versionName": "2.4.2",
-  "apk": "dist/Overdrive-18.apk",
-  "notes": "Up from any tile reaches Open / Options / Pin. Lock button. Updates now show up within about a minute."
+  "versionCode": 19,
+  "versionName": "2.4.3",
+  "apk": "dist/Overdrive-19.apk",
+  "notes": "Fire TV's own click is silenced inside Sora, so only Sora's sounds play. Up from any tile reaches Open / Options / Pin. Lock button."
 }
