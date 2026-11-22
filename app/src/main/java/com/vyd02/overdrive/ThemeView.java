@@ -21,7 +21,7 @@ import android.view.SurfaceView;
 public class ThemeView extends SurfaceView implements SurfaceHolder.Callback, Choreographer.FrameCallback {
 
     static final int RW = 1280, RH = 720;                       // the themes' drawing coordinates
-    private static final int[][] TIERS = {{960, 540}, {800, 450}, {640, 360}};
+    private static final int[][] TIERS = {{1920, 1080}, {1280, 720}, {960, 540}}; // full HD first
 
     private volatile Themes.Theme theme;
     private final Themes.Input input = new Themes.Input();

@@ -126,6 +126,7 @@ final class Themes {
             g = new RadialGradient(0, 0, 1f, new int[]{Color.WHITE, Color.argb(midAlpha, 255, 255, 255), 0},
                     new float[]{0f, midStop, 1f}, Shader.TileMode.CLAMP);
             p.setShader(g);
+            p.setXfermode(new android.graphics.PorterDuffXfermode(PorterDuff.Mode.ADD)); // glows add like light
         }
         void draw(Canvas c, float x, float y, float r, int color, int alpha) {
             if (r <= 1 || alpha <= 0) return;
@@ -145,6 +146,7 @@ final class Themes {
     static final class Stars {
         final float[] x, y, r, ph, depth;
         final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        { p.setXfermode(new android.graphics.PorterDuffXfermode(PorterDuff.Mode.ADD)); }
         Stars(Random rnd, int n, float maxY) {
             x = new float[n]; y = new float[n]; r = new float[n]; ph = new float[n]; depth = new float[n];
             for (int i = 0; i < n; i++) {
@@ -339,6 +341,7 @@ final class Themes {
         static final int N = 280;
         final float[] x = new float[N], y = new float[N], z = new float[N];
         final Paint star = new Paint(Paint.ANTI_ALIAS_FLAG);
+        { star.setXfermode(new android.graphics.PorterDuffXfermode(PorterDuff.Mode.ADD)); }
         final Paint flash = new Paint();
         Glow glow;
         float cx, cy, speed;
@@ -560,6 +563,7 @@ final class Themes {
         static final int N = 170;
         final float[] x = new float[N], y = new float[N], vx = new float[N], vy = new float[N], life = new float[N], size = new float[N];
         final Paint bg = new Paint(Paint.DITHER_FLAG), ember = new Paint(Paint.ANTI_ALIAS_FLAG);
+        { ember.setXfermode(new android.graphics.PorterDuffXfermode(PorterDuff.Mode.ADD)); }
         Glow glow;
         int next;
 

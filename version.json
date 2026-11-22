@@ -1,6 +1,6 @@
 {
-  "versionCode": 13,
-  "versionName": "2.2.0",
-  "apk": "dist/Overdrive-13.apk",
-  "notes": "Upgraded chromatic bloom intro with real glowing light, lens flares and fine detail. All-new softer sounds."
+  "versionCode": 14,
+  "versionName": "2.3.0",
+  "apk": "dist/Overdrive-14.apk",
+  "notes": "HD pass: themes draw at full 1080p with glowing light, tiles get a premium gloss and fine edges, the spotlight card stays sharp."
 }

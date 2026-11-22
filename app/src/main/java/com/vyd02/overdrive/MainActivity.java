@@ -530,6 +530,7 @@ public class MainActivity extends Activity {
         heroCard.setFocusableInTouchMode(false);
         heroCard.setClickable(false);
         heroCard.setAlwaysLit();
+        heroCard.setPreferCrisp(true); // never blow up a small, blurry app image
         heroCard.setCameraDistance(8000 * d);
         FrameLayout.LayoutParams clp = new FrameLayout.LayoutParams(dp(300), dp(169), Gravity.END | Gravity.CENTER_VERTICAL);
         clp.rightMargin = dp(58);

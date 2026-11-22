@@ -50,6 +50,9 @@ public class TileView extends View {
     private final Paint iconPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
     private final Paint ring = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint glow = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint gloss = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.DITHER_FLAG);
+    private final Paint edge = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private boolean preferCrisp;
     private final Paint dim = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint sheenPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final TextPaint text = new TextPaint(Paint.ANTI_ALIAS_FLAG | Paint.SUBPIXEL_TEXT_FLAG);
@@ -100,6 +103,9 @@ public class TileView extends View {
 
     /** Spotlight card: always drawn bright, never dimmed. */
     public void setAlwaysLit() { focus = 1f; lit = true; invalidate(); }
+
+    /** For big cards: if the app's art is too small to look sharp at this size, show a crisp icon card instead. */
+    public void setPreferCrisp(boolean on) { preferCrisp = on; rebuild(); }
     private boolean lit;
 
     private boolean badge;
@@ -125,7 +131,9 @@ public class TileView extends View {
         r.set(inset, inset, w - inset, h - inset);
 
         artShader = null;
-        if (art != null) {
+        boolean artSharp = art != null && (!preferCrisp || art.getWidth() >= r.width() * 0.8f);
+        if (art != null && artSharp) {
+            try { art.setHasMipMap(true); } catch (Exception ignored) { } // smoother when shown smaller
             BitmapShader sh = new BitmapShader(art, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP);
             float s = Math.max(r.width() / art.getWidth(), r.height() / art.getHeight());
             Matrix m = new Matrix();
@@ -145,6 +153,13 @@ public class TileView extends View {
         shownLabel = TextUtils.ellipsize(label, text, r.width() - 12 * d, TextUtils.TruncateAt.END);
         labelX = r.centerX() - text.measureText(shownLabel, 0, shownLabel.length()) / 2f;
         labelY = r.bottom - r.height() * 0.12f;
+
+        // premium finish: a soft gloss across the top, and a hairline edge
+        gloss.setShader(new LinearGradient(0, r.top, 0, r.top + r.height() * 0.55f,
+                new int[]{Color.argb(34, 255, 255, 255), Color.argb(8, 255, 255, 255), 0}, new float[]{0f, 0.4f, 1f}, Shader.TileMode.CLAMP));
+        edge.setStyle(Paint.Style.STROKE);
+        edge.setStrokeWidth(Math.max(1f, 0.8f * d));
+        glow.setXfermode(new android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.ADD)); // the glow adds light
 
         // sheen: a soft diagonal band built once, slid across with a matrix
         float band = r.width() * 0.35f;
@@ -201,9 +216,9 @@ public class TileView extends View {
         if (r.isEmpty()) return;
 
         if (focus > 0.01f) {
-            for (int i = 3; i >= 1; i--) {
-                glow.setStrokeWidth(i * 2.4f * d);
-                glow.setColor(BackgroundView.withAlpha(accent, (int) (focus * 75 / i)));
+            for (int i = 4; i >= 1; i--) {
+                glow.setStrokeWidth(i * 2.6f * d);
+                glow.setColor(BackgroundView.withAlpha(accent, (int) (focus * 90 / i)));
                 c.drawRoundRect(r, rad, rad, glow);
             }
         }
@@ -219,6 +234,10 @@ public class TileView extends View {
             if (icon != null) c.drawBitmap(icon, null, iconDst, iconPaint);
             c.drawText(shownLabel, 0, shownLabel.length(), labelX, labelY, text);
         }
+
+        c.drawRoundRect(r, rad, rad, gloss);
+        edge.setColor(Color.argb((int) (40 * (1f - focus)), 255, 255, 255));
+        if (focus < 0.99f) c.drawRoundRect(r, rad, rad, edge);
 
         int dimA = (int) (80 * (1f - focus));
         if (dimA > 0) {
