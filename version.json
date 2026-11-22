@@ -1,6 +1,6 @@
 {
-  "versionCode": 12,
-  "versionName": "2.1.0",
-  "apk": "dist/Overdrive-12.apk",
-  "notes": "Overdrive is now Sora. Brand-new chromatic bloom intro, new logo, new sound."
+  "versionCode": 13,
+  "versionName": "2.2.0",
+  "apk": "dist/Overdrive-13.apk",
+  "notes": "Upgraded chromatic bloom intro with real glowing light, lens flares and fine detail. All-new softer sounds."
 }

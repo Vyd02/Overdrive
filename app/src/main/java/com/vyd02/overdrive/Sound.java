@@ -41,7 +41,7 @@ final class Sound {
             if (now - lastMove < 45) return; // holding the D-pad shouldn't machine-gun
             lastMove = now;
         }
-        float vol = which == MOVE ? 0.45f : which == INTRO ? 0.8f : 0.6f;
+        float vol = which == MOVE ? 0.35f : which == INTRO ? 0.85f : 0.5f; // soft by design
         pool.play(ids[which], vol, vol, 1, 0, 1f);
     }
 

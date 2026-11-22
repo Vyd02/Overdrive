@@ -725,7 +725,7 @@ public class MainActivity extends Activity {
         if (firstBuild) {
             t.setAlpha(0f);
             t.setTranslationY(dp(26));
-            long base = intro.isPlaying() ? 2300 : 80;
+            long base = intro.isPlaying() ? 2550 : 80;
             t.animate().alpha(1f).translationY(0).setStartDelay(base + Math.min(idx, 20) * 28L)
                     .setDuration(460).setInterpolator(Ui.EASE_OUT).start();
         }
