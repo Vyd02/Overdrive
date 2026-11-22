@@ -1,4 +1,4 @@
-# Overdrive
+# Sora (formerly Overdrive)
 
 Cinematic home screen for Fire TV, with its own look: PlayStation 5 meets Apple TV.
 

@@ -96,7 +96,7 @@ final class Themes {
     /** Reused color filters, keyed by a slightly rounded color. Render thread only, so no locking. */
     private static final java.util.HashMap<Integer, PorterDuffColorFilter> FILTERS = new java.util.HashMap<>();
 
-    static PorterDuffColorFilter tintFilter(int color) {
+    static synchronized PorterDuffColorFilter tintFilter(int color) { // shared by the intro (UI thread) and themes (render thread)
         int key = (color & 0xFCFCFC) | 0xFF000000; // round off the lowest bits: ~250k colors max, in practice a few dozen
         PorterDuffColorFilter f = FILTERS.get(key);
         if (f == null) {

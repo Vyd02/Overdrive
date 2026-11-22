@@ -1,4 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="guard_desc">Sends you back to Overdrive whenever Amazon\'s home screen opens, like when you press Back out of an app. It only watches for Amazon\'s home screen and reads nothing else.</string>
+    <string name="guard_desc">Sends you back to Sora whenever Amazon\'s home screen opens, like when you press Back out of an app. It only watches for Amazon\'s home screen and reads nothing else.</string>
 </resources>

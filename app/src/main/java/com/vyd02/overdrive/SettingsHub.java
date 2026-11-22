@@ -78,9 +78,9 @@ public class SettingsHub extends FrameLayout {
             "What happens when the TV turns on.",
             "Where your weather comes from.",
             "Apps you've hidden from the home screen.",
-            "Overdrive updates itself from GitHub.",
+            "Sora updates itself from GitHub.",
             "Jump straight to any Fire TV settings page.",
-            "This TV and this version of Overdrive."};
+            "This TV and this version of Sora."};
 
     private final Host host;
     private final float d;
@@ -347,13 +347,13 @@ public class SettingsHub extends FrameLayout {
     }
 
     private void buildUpdates() {
-        pane.addView(infoRow("Installed", "Overdrive " + BuildConfig.VERSION_NAME));
+        pane.addView(infoRow("Installed", "Sora " + BuildConfig.VERSION_NAME));
         pane.addView(infoRow("How it works", "Checks GitHub every 30 minutes while open, then asks you to press Install"));
         pane.addView(action("Check for updates now", null, () -> host.sub("updates")));
     }
 
     private void buildAbout() {
-        String[] labels = {"Device", "Software", "Storage", "Memory", "Network", "IP address", "Display", "Overdrive"};
+        String[] labels = {"Device", "Software", "Storage", "Memory", "Network", "IP address", "Display", "Sora"};
         for (int i = 0; i < labels.length; i++) pane.addView(infoRow(labels[i], info[i] == null ? "…" : info[i]));
     }
 

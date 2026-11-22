@@ -16,7 +16,7 @@ import android.provider.Settings;
 
 /**
  * Built-in "launch on boot / launch on wake". Stays running quietly so that the moment the
- * TV wakes from standby (the normal power button), Overdrive comes up instead of Amazon's home.
+ * TV wakes from standby (the normal power button), Sora comes up instead of Amazon's home.
  */
 public class WakeService extends Service {
 
@@ -37,7 +37,7 @@ public class WakeService extends Service {
         } catch (Exception ignored) { }
     }
 
-    /** Can Overdrive open itself from the background on this TV? */
+    /** Can Sora open itself from the background on this TV? */
     static boolean canLaunchFromBackground(Context c) {
         if (Build.VERSION.SDK_INT < 29) return true;                     // Fire OS 7 and older: always
         if (HomeGuardService.isEnabled(c)) return true;                  // accessibility exemption
@@ -58,7 +58,7 @@ public class WakeService extends Service {
             b = new Notification.Builder(this).setPriority(Notification.PRIORITY_MIN);
         }
         Notification n = b.setSmallIcon(R.mipmap.ic_launcher)
-                .setContentTitle("Overdrive")
+                .setContentTitle("Sora")
                 .setContentText("Ready to open when the TV turns on")
                 .setOngoing(true)
                 .build();

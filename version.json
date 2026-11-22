@@ -1,6 +1,6 @@
 {
-  "versionCode": 11,
-  "versionName": "2.0.0",
-  "apk": "dist/Overdrive-11.apk",
-  "notes": "Overdrive 2.0: cinematic redesign. New look and typography, spotlight with action buttons, gliding focus light, zoom-into-app launches, search with on-screen keyboard, all-new two-pane Settings with live theme previews."
+  "versionCode": 12,
+  "versionName": "2.1.0",
+  "apk": "dist/Overdrive-12.apk",
+  "notes": "Overdrive is now Sora. Brand-new chromatic bloom intro, new logo, new sound."
 }

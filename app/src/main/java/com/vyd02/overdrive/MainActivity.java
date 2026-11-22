@@ -360,37 +360,49 @@ public class MainActivity extends Activity {
         return v;
     }
 
-    /** Overdrive's mark: two chevrons and the wordmark. */
+    /** Sora's mark: a rainbow ring (the intro's ring) and the wordmark in the Sora typeface. */
     static class Logo extends View {
-        private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint ring = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint t = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.SUBPIXEL_TEXT_FLAG);
-        private final Path path = new Path();
+        private final android.graphics.Matrix m = new android.graphics.Matrix();
+        private android.graphics.SweepGradient sweep;
         private final float d;
+        private float spin;
+        private android.animation.ValueAnimator a;
         Logo(Context c) {
             super(c);
             d = c.getResources().getDisplayMetrics().density;
-            p.setStyle(Paint.Style.STROKE);
-            p.setStrokeCap(Paint.Cap.ROUND);
-            p.setStrokeJoin(Paint.Join.ROUND);
-            p.setStrokeWidth(3.2f * d);
-            p.setColor(Ui.ACCENT);
+            ring.setStyle(Paint.Style.STROKE);
+            ring.setStrokeWidth(3.2f * d);
+            sweep = new android.graphics.SweepGradient(0, 0, new int[]{0xFFFF3D71, 0xFFFF9F1C, 0xFFFFE14D, 0xFF3DFFB0,
+                    0xFF2BD9FF, 0xFF6C63FF, 0xFFD65CFF, 0xFFFF3D71}, null);
+            ring.setShader(sweep);
             t.setColor(Color.WHITE);
-            t.setTypeface(Ui.display(c, 700));
-            t.setTextSize(15 * d);
-            t.setLetterSpacing(0.32f);
+            t.setTypeface(Ui.brand(c, true));
+            t.setTextSize(17 * d);
+            t.setLetterSpacing(0.28f);
         }
+        @Override protected void onAttachedToWindow() {
+            super.onAttachedToWindow();
+            spinOnce();
+        }
+        /** One turn of the ring (on arrival). Not looping, so the screen can sit perfectly still. */
+        void spinOnce() {
+            if (a != null) a.cancel();
+            a = android.animation.ValueAnimator.ofFloat(spin, spin + 360f);
+            a.setDuration(1400);
+            a.setInterpolator(Ui.EASE_OUT);
+            a.addUpdateListener(an -> { spin = (float) an.getAnimatedValue(); invalidate(); });
+            a.start();
+        }
+        @Override protected void onDetachedFromWindow() { if (a != null) a.cancel(); super.onDetachedFromWindow(); }
         @Override protected void onDraw(Canvas c) {
-            float cy = getHeight() / 2f, s = 8 * d;
-            for (int i = 0; i < 2; i++) {
-                float x = s + i * s * 0.95f;
-                path.reset();
-                path.moveTo(x - s * 0.55f, cy - s);
-                path.lineTo(x + s * 0.35f, cy);
-                path.lineTo(x - s * 0.55f, cy + s);
-                p.setAlpha(i == 0 ? 150 : 255);
-                c.drawPath(path, p);
-            }
-            c.drawText("OVERDRIVE", s * 3.4f, cy + 5.2f * d, t);
+            float cy = getHeight() / 2f, r = 9 * d, cx = r + 2 * d;
+            m.setRotate(spin);
+            m.postTranslate(cx, cy);
+            sweep.setLocalMatrix(m);
+            c.drawCircle(cx, cy, r, ring);
+            c.drawText("SORA", cx + r + 12 * d, cy + 6 * d, t);
         }
     }
 
@@ -713,7 +725,7 @@ public class MainActivity extends Activity {
         if (firstBuild) {
             t.setAlpha(0f);
             t.setTranslationY(dp(26));
-            long base = intro.isPlaying() ? 1900 : 80;
+            long base = intro.isPlaying() ? 2300 : 80;
             t.animate().alpha(1f).translationY(0).setStartDelay(base + Math.min(idx, 20) * 28L)
                     .setDuration(460).setInterpolator(Ui.EASE_OUT).start();
         }
@@ -821,7 +833,7 @@ public class MainActivity extends Activity {
             t.pulse();
             sound.play(Sound.SELECT);
             theme.select();
-            try { startActivity(Inputs.intent(in)); } catch (Exception e) { showBanner("This TV didn't let Overdrive switch inputs"); }
+            try { startActivity(Inputs.intent(in)); } catch (Exception e) { showBanner("This TV didn't let Sora switch inputs"); }
         };
         t.setOnFocusChangeListener((v, has) -> {
             if (!has) return;
@@ -871,7 +883,7 @@ public class MainActivity extends Activity {
             if (!has) return;
             heroApp = null;
             heroOpen = open;
-            setHero(label, "QUICK SETTINGS", action == null ? "Overdrive and Fire TV settings" : "Opens the Fire TV page", accent, null, t, false, false);
+            setHero(label, "QUICK SETTINGS", action == null ? "Sora and Fire TV settings" : "Opens the Fire TV page", accent, null, t, false, false);
             onTileFocused(t);
         });
         t.setOnClickListener(v -> open.run());
@@ -971,7 +983,7 @@ public class MainActivity extends Activity {
     private void dockHero(String title, String meta) {
         heroApp = null;
         heroOpen = null;
-        setHero(title, "OVERDRIVE", meta, Ui.ACCENT, null, null, false, false);
+        setHero(title, "SORA", meta, Ui.ACCENT, null, null, false, false);
         actOpen.setVisibility(View.GONE);
     }
 
@@ -1478,7 +1490,7 @@ public class MainActivity extends Activity {
                             + "appops set com.vyd02.overdrive SYSTEM_ALERT_WINDOW allow",
                     items, null);
         } else {
-            items.add(new Item(on ? "Turn off" : "Turn on", on ? "Let Amazon's home stay open" : "Always come back to Overdrive", () -> {
+            items.add(new Item(on ? "Turn off" : "Turn on", on ? "Let Amazon's home stay open" : "Always come back to Sora", () -> {
                 repo.prefs().edit().putBoolean(HomeGuardService.KEY_GUARD_ON, !on).apply();
                 closePanel(true);
                 showBanner(on ? "Guard off" : "Guard on");
@@ -1718,13 +1730,13 @@ public class MainActivity extends Activity {
         List<Item> items = new ArrayList<>();
         items.add(new Item("Install now", "Downloads and asks the TV to install", () -> startInstall(r)));
         items.add(new Item("Later", null, () -> closePanel(true)));
-        showPanel("Update " + r.version, notes.isEmpty() ? "A new version of Overdrive is ready." : notes, items, null);
+        showPanel("Update " + r.version, notes.isEmpty() ? "A new version of Sora is ready." : notes, items, null);
     }
 
     private void startInstall(Updater.Release r) {
         if (Build.VERSION.SDK_INT >= 26 && !getPackageManager().canRequestPackageInstalls()) {
             List<Item> items = new ArrayList<>();
-            items.add(new Item("Open settings", "Turn on Overdrive, then come back", () -> {
+            items.add(new Item("Open settings", "Turn on Sora, then come back", () -> {
                 try {
                     startActivity(new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
                             Uri.parse("package:" + getPackageName())).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
@@ -1734,7 +1746,7 @@ public class MainActivity extends Activity {
             }));
             items.add(new Item("Try again", null, () -> startInstall(r)));
             showPanel("One-time setup",
-                    "Let Overdrive install its own updates:\nSettings → My Fire TV → Developer options → Install unknown apps → Overdrive → ON",
+                    "Let Sora install its own updates:\nSettings → My Fire TV → Developer options → Install unknown apps → Sora → ON",
                     items, null);
             return;
         }

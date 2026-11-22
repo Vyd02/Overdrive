@@ -38,7 +38,21 @@ final class Ui {
     static final PathInterpolator SPRING = new PathInterpolator(0.2f, 0.9f, 0.25f, 1.08f); // tiny overshoot
 
     // ---- type ----
-    private static Typeface dLight, dMedium, dBold, bRegular, bSemi;
+    private static Typeface dLight, dMedium, dBold, bRegular, bSemi, brandBold, brandSemi;
+
+    /** Sora: the brand typeface, used for the name itself. */
+    static Typeface brand(Context c, boolean heavy) {
+        if (brandBold == null) {
+            try {
+                brandBold = Typeface.createFromAsset(c.getAssets(), "fonts/sora_800.ttf");
+                brandSemi = Typeface.createFromAsset(c.getAssets(), "fonts/sora_600.ttf");
+            } catch (Exception e) {
+                brandBold = display(c, 700);
+                brandSemi = display(c, 500);
+            }
+        }
+        return heavy ? brandBold : brandSemi;
+    }
 
     static Typeface display(Context c, int weight) {
         load(c);
