@@ -92,6 +92,16 @@ public class TileView extends View {
         rebuild();
     }
 
+    /** Mirror another tile's look (used by the big spotlight card). */
+    public void copyFrom(TileView o) {
+        label = o.label; art = o.art; icon = o.icon; accent = o.accent; custom = o.custom;
+        rebuild();
+    }
+
+    /** Spotlight card: always drawn bright, never dimmed. */
+    public void setAlwaysLit() { focus = 1f; lit = true; invalidate(); }
+    private boolean lit;
+
     public int getAccent() { return accent; }
     public String getLabel() { return label; }
 
@@ -152,6 +162,7 @@ public class TileView extends View {
     }
 
     private void animateFocus(float to) {
+        if (lit) return;
         if (focusAnim != null) focusAnim.cancel();
         focusAnim = ValueAnimator.ofFloat(focus, to);
         focusAnim.setDuration(220);

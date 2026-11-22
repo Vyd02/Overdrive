@@ -19,7 +19,7 @@ public class BootReceiver extends BroadcastReceiver {
 
     static void open(Context c) {
         try {
-            c.startActivity(new Intent(c, MainActivity.class)
+            c.startActivity(new Intent(c, MainActivity.class).putExtra(MainActivity.EXTRA_INTRO, true)
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT));
         } catch (Exception ignored) { }
     }

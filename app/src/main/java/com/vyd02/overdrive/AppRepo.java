@@ -27,6 +27,7 @@ public class AppRepo {
         // prepared off the UI thread so scrolling never waits on image work
         public android.graphics.Bitmap artBmp, iconBmp;
         public int accent;
+        public android.graphics.Bitmap blurBmp; // soft backdrop for the spotlight
         long updated;
     }
 
@@ -95,12 +96,43 @@ public class AppRepo {
             a.artBmp = a.banner != null ? TileView.toBitmap(a.banner, 512, 288) : null;
             a.iconBmp = a.icon != null ? TileView.toBitmap(a.icon, 256, 256) : null;
             a.accent = TileView.pickAccent(a.artBmp != null ? a.artBmp : a.iconBmp);
+            a.blurBmp = blur(a.artBmp != null ? a.artBmp : a.iconBmp);
             a.banner = null; // bitmaps are all we keep
             a.icon = null;
             cache.put(pkg, a);
             out.put(pkg, a);
         }
     }
+
+    /** Very soft version of the art: shrink to a few pixels, then smoothly grow back. */
+    static android.graphics.Bitmap blur(android.graphics.Bitmap src) {
+        if (src == null) return null;
+        try {
+            android.graphics.Bitmap s = src;
+            if (android.os.Build.VERSION.SDK_INT >= 26 && s.getConfig() == android.graphics.Bitmap.Config.HARDWARE)
+                s = s.copy(android.graphics.Bitmap.Config.ARGB_8888, false);
+            android.graphics.Bitmap tiny = android.graphics.Bitmap.createScaledBitmap(s, 24, 14, true);
+            android.graphics.Bitmap mid = android.graphics.Bitmap.createScaledBitmap(tiny, 96, 54, true);
+            return android.graphics.Bitmap.createScaledBitmap(mid, 384, 216, true);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    // ---- favorites (your order) ----
+
+    public List<String> favorites() {
+        String raw = prefs.getString("favorites", "");
+        List<String> out = new ArrayList<>();
+        for (String p : raw.split(",")) if (!p.isEmpty()) out.add(p);
+        return out;
+    }
+
+    public void setFavorites(List<String> list) {
+        prefs.edit().putString("favorites", android.text.TextUtils.join(",", list)).apply();
+    }
+
+    public long lastOpened(String pkg) { return prefs.getLong("t_" + pkg, 0); }
 
     private static Drawable hiRes(PackageManager pm, ActivityInfo ai, int resId, int density) {
         if (resId == 0) return null;
@@ -144,6 +176,7 @@ public class AppRepo {
     }
 
     public void markLaunched(String pkg) {
+        prefs.edit().putLong("t_" + pkg, System.currentTimeMillis()).apply();
         List<String> r = recents();
         r.remove(pkg);
         r.add(0, pkg);

@@ -1,6 +1,6 @@
 {
-  "versionCode": 6,
-  "versionName": "1.1.1",
-  "apk": "dist/Overdrive-6.apk",
-  "notes": "Correct setup steps for the Back & Home guard."
+  "versionCode": 7,
+  "versionName": "1.2.0",
+  "apk": "dist/Overdrive-7.apk",
+  "notes": "Big upgrade: 6 interactive themes, PS5-style spotlight, console sounds, startup intro, screensaver, favorites you can reorder, auto categories, HDMI inputs and quick settings."
 }

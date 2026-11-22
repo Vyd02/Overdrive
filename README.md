@@ -1,6 +1,12 @@
 # Overdrive
 
-Console-style home screen for Fire TV. Big animated app tiles, clock and weather, recently used row, hidden apps, and self-updates from GitHub Releases.
+Console-style home screen for Fire TV.
+
+- 6 interactive animated themes (Nebula, Synthwave, Hyperspace, Aurora, Deep Sea, Ember Forge) that react to the remote, with live preview
+- PS5-style spotlight: the focused app's art fills the top of the screen
+- Console UI sounds, startup intro, idle screensaver
+- Favorites row you can reorder, Recent, HDMI inputs, auto categories (Streaming / Games / Music / Apps / Tools), quick settings
+- Hidden apps, weather, Back & Home guard, opens on power-up, self-updates from this repo
 
 ## Install on the TV
 1. In Downloader, open: `github.com/Vyd02/Overdrive/raw/main/dist/Overdrive.apk`
