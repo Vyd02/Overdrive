@@ -1,6 +1,6 @@
 {
-  "versionCode": 15,
-  "versionName": "2.3.1",
-  "apk": "dist/Overdrive-15.apk",
-  "notes": "Fix: rows no longer slide over the title area. Same fix for Settings and Search."
+  "versionCode": 16,
+  "versionName": "2.4.0",
+  "apk": "dist/Overdrive-16.apk",
+  "notes": "New lock button: keeps you in Sora so you never fall back to Amazon's home screen."
 }

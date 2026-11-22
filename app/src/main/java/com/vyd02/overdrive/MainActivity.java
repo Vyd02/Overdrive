@@ -79,7 +79,7 @@ public class MainActivity extends Activity {
     private TextView heroEyebrow, heroName, heroMeta;
     private TileView heroCard;
     private Ui.Pill actOpen, actOptions, actPin;
-    private Ui.Pill dockSearch, dockSettings;
+    private Ui.Pill dockSearch, dockSettings, dockLock;
     private View updateDot;
     private RowScroller scroll;
     private LinearLayout rowsBox;
@@ -190,6 +190,7 @@ public class MainActivity extends Activity {
             content.animate().withLayer().alpha(1f).scaleX(1f).scaleY(1f).setDuration(420).setInterpolator(Ui.EASE_OUT).start();
         }
         ui.postDelayed(this::autoCheckUpdate, 2500);
+        refreshLock();
     }
 
     @Override
@@ -455,9 +456,21 @@ public class MainActivity extends Activity {
         ccol.addView(clockDate, cdl);
         bar.addView(ccol);
 
+        // lock: keeps you in Sora (bounces Amazon's home screen away)
+        dockLock = new Ui.Pill(this, "lock", null, false);
+        LinearLayout.LayoutParams kl = new LinearLayout.LayoutParams(dp(40), dp(40));
+        kl.leftMargin = dp(22);
+        bar.addView(dockLock, kl);
+        dockLock.setOnClickListener(v -> toggleLock());
+        dockLock.setOnFocusChangeListener((v, has) -> {
+            if (has) { dockHero(lockTitle(), lockMeta()); themeAt(v, Ui.ACCENT); }
+            v.post(this::refreshLock); // keep the lock tinted after the pill repaints itself
+        });
+        refreshLock();
+
         dockSearch = new Ui.Pill(this, "search", null, false);
         LinearLayout.LayoutParams sl = new LinearLayout.LayoutParams(dp(40), dp(40));
-        sl.leftMargin = dp(22);
+        sl.leftMargin = dp(12);
         bar.addView(dockSearch, sl);
         dockSearch.setOnClickListener(v -> { sound.play(Sound.OPEN); openSearch(); });
         dockSearch.setOnFocusChangeListener((v, has) -> { if (has) { dockHero("Search", "Find any app by name"); themeAt(v, Ui.ACCENT); } });
@@ -1222,6 +1235,47 @@ public class MainActivity extends Activity {
         });
     }
 
+    // =====================================================================
+    // Lock: never fall back to Amazon's home screen
+    // =====================================================================
+
+    private boolean locked() {
+        return HomeGuardService.isEnabled(this) && repo.prefs().getBoolean(HomeGuardService.KEY_GUARD_ON, true);
+    }
+
+    private String lockTitle() { return locked() ? "Locked to Sora" : "Unlocked"; }
+
+    private String lockMeta() {
+        if (!HomeGuardService.isEnabled(this)) return "Needs a one-time setup from your phone. Press OK";
+        return locked() ? "Amazon's home screen bounces right back to Sora. OK to unlock"
+                : "Back and Home can land on Amazon's home screen. OK to lock";
+    }
+
+    private void refreshLock() {
+        if (dockLock == null) return;
+        dockLock.icon.setIcon(locked() ? "lock" : "unlock");
+        dockLock.icon.setColor(dockLock.isFocused() ? Ui.INK : locked() ? Ui.ACCENT : Ui.TEXT);
+        dockLock.setAlpha(HomeGuardService.isEnabled(this) ? 1f : 0.7f);
+    }
+
+    private void toggleLock() {
+        if (!HomeGuardService.isEnabled(this)) {
+            // the lock rides on the Back & Home guard, which Fire TV only lets you switch on from a phone
+            sound.play(Sound.OPEN);
+            showGuardPanel();
+            return;
+        }
+        boolean now = !locked();
+        repo.prefs().edit().putBoolean(HomeGuardService.KEY_GUARD_ON, now).apply();
+        sound.play(now ? Sound.SELECT : Sound.BACK);
+        theme.select();
+        refreshLock();
+        dockLock.animate().rotation(now ? 0 : -12).setDuration(120)
+                .withEndAction(() -> dockLock.animate().rotation(0).setInterpolator(Ui.SPRING).setDuration(260).start()).start();
+        showBanner(now ? "Locked. Sora stays on screen" : "Unlocked");
+        dockHero(lockTitle(), lockMeta());
+    }
+
     private void buildSaver() {
         saver = new FrameLayout(this);
         saver.setVisibility(View.GONE);
@@ -1674,6 +1728,7 @@ public class MainActivity extends Activity {
         if (overlay.getVisibility() != View.VISIBLE) return;
         Runnable done = () -> {
             overlay.setVisibility(View.GONE);
+            refreshLock();
             hub.setDescendantFocusability(ViewGroup.FOCUS_AFTER_DESCENDANTS);
             search.setDescendantFocusability(ViewGroup.FOCUS_AFTER_DESCENDANTS);
             if (!hub.isOpen() && !search.isOpen()) content.setDescendantFocusability(ViewGroup.FOCUS_AFTER_DESCENDANTS);

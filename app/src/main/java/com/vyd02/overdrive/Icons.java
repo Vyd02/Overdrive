@@ -181,6 +181,20 @@ final class Icons {
                 r.set(cx - s * 0.55f, cy - s * 0.7f, cx + s * 0.35f, cy + s * 0.2f); c.drawArc(r, 180, 160, false, p);
                 r.set(cx + s * 0.15f, cy - s * 0.3f, cx + s, cy + s * 0.55f); c.drawArc(r, 270, 180, false, p);
                 break;
+            case "lock":
+            case "unlock": {
+                // body
+                r.set(cx - s * 0.62f, cy - s * 0.1f, cx + s * 0.62f, cy + s * 0.8f);
+                c.drawRoundRect(r, s * 0.14f, s * 0.14f, p);
+                // shackle (lifted and swung open when unlocked)
+                float lift = name.equals("unlock") ? s * 0.22f : 0f;
+                r.set(cx - s * 0.38f, cy - s * 0.78f - lift, cx + s * 0.38f, cy + s * 0.0f - lift);
+                c.drawArc(r, 180, 180, false, p);
+                c.drawLine(cx + s * 0.38f, cy - s * 0.39f - lift, cx + s * 0.38f, cy - s * 0.1f - (name.equals("unlock") ? lift : 0), p);
+                if (!name.equals("unlock")) c.drawLine(cx - s * 0.38f, cy - s * 0.39f, cx - s * 0.38f, cy - s * 0.1f, p);
+                fill(p); c.drawCircle(cx, cy + s * 0.32f, s * 0.1f, p);
+                break;
+            }
             case "search":
                 c.drawCircle(cx - s * 0.15f, cy - s * 0.15f, s * 0.55f, p);
                 c.drawLine(cx + s * 0.25f, cy + s * 0.25f, cx + s * 0.75f, cy + s * 0.75f, p);
