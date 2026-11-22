@@ -1,6 +1,6 @@
 {
-  "versionCode": 4,
-  "versionName": "1.0.3",
-  "apk": "dist/Overdrive-4.apk",
-  "notes": "Opens as soon as the TV turns on. Updates install from GitHub on their own."
+  "versionCode": 5,
+  "versionName": "1.1.0",
+  "apk": "dist/Overdrive-5.apk",
+  "notes": "Much smoother: GPU-animated background, sharper app art, no stutter when moving between tiles."
 }

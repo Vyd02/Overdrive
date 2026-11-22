@@ -89,6 +89,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
+        getWindow().setFormat(android.graphics.PixelFormat.RGBA_8888); // full color depth: no banding in gradients
         repo = new AppRepo(this);
         d = getResources().getDisplayMetrics().density;
         buildUi();
@@ -199,10 +200,13 @@ public class MainActivity extends Activity {
         heroName = text(30, C_TEXT, "sans-serif", Typeface.BOLD);
         heroName.setSingleLine(true);
         heroName.setShadowLayer(dp(12), 0, dp(2), Color.argb(160, 0, 0, 0));
-        body.addView(heroName);
+        heroName.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        // full-width so changing the name only repaints it instead of re-laying-out the whole screen
+        body.addView(heroName, new LinearLayout.LayoutParams(-1, -2));
         heroTag = text(10.5f, C_ACCENT, "sans-serif-medium", Typeface.NORMAL);
         heroTag.setLetterSpacing(0.22f);
-        LinearLayout.LayoutParams tagLp = new LinearLayout.LayoutParams(-2, -2);
+        heroTag.setSingleLine(true);
+        LinearLayout.LayoutParams tagLp = new LinearLayout.LayoutParams(-1, -2);
         tagLp.topMargin = dp(6);
         body.addView(heroTag, tagLp);
 
@@ -507,14 +511,17 @@ public class MainActivity extends Activity {
     private TileView makeSettingsTile() {
         TileView t = new TileView(this, 1.14f);
         final int accent = Color.parseColor("#8FA3C7");
-        final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.DITHER_FLAG);
         final TextPaint tp = new TextPaint(Paint.ANTI_ALIAS_FLAG);
         tp.setColor(Color.WHITE);
+        final RectF[] last = {new RectF()};
         t.setCustom("Fire TV Settings", accent, (Canvas c, RectF r, float focus) -> {
-            p.setShader(new LinearGradient(r.left, r.top, r.right, r.bottom,
-                    Color.parseColor("#2A3550"), Color.parseColor("#141A2B"), Shader.TileMode.CLAMP));
+            if (!r.equals(last[0])) { // build the gradient only when the size changes
+                last[0] = new RectF(r);
+                p.setShader(new LinearGradient(r.left, r.top, r.right, r.bottom,
+                        Color.parseColor("#2A3550"), Color.parseColor("#141A2B"), Shader.TileMode.CLAMP));
+            }
             c.drawRoundRect(r, dp(10), dp(10), p);
-            p.setShader(null);
             c.save();
             c.rotate(focus * 90f, r.centerX(), r.centerY() - r.height() * 0.08f);
             tp.setTextSize(r.height() * 0.42f);
@@ -601,8 +608,10 @@ public class MainActivity extends Activity {
                     }
                     clockTime.setText(t);
                 }
-                clockAmPm.setText(fAmPm.format(now));
-                clockDate.setText(fDate.format(now));
+                String ap = fAmPm.format(now), dt = fDate.format(now);
+                // only touch the text when it actually changes, so the screen isn't re-laid-out every second
+                if (!ap.contentEquals(clockAmPm.getText())) clockAmPm.setText(ap);
+                if (!dt.contentEquals(clockDate.getText())) clockDate.setText(dt);
                 ui.postDelayed(this, 1000);
             }
         };

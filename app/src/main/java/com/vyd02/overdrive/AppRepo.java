@@ -24,7 +24,14 @@ public class AppRepo {
         public String label;
         public Drawable banner; // wide TV art, may be null
         public Drawable icon;
+        // prepared off the UI thread so scrolling never waits on image work
+        public android.graphics.Bitmap artBmp, iconBmp;
+        public int accent;
+        long updated;
     }
+
+    // keeps prepared images between reloads so returning home doesn't redo image work
+    private final Map<String, App> cache = new java.util.concurrent.ConcurrentHashMap<>();
 
     private static final String PREFS = "overdrive";
     private static final String KEY_HIDDEN = "hidden";
@@ -63,18 +70,45 @@ public class AppRepo {
             if (ai == null) continue;
             String pkg = ai.packageName;
             if (pkg.equals(ctx.getPackageName()) || out.containsKey(pkg)) continue;
+            long updated = 0;
+            try { updated = pm.getPackageInfo(pkg, 0).lastUpdateTime; } catch (Exception ignored) { }
+            App cached = cache.get(pkg);
+            if (cached != null && cached.updated == updated) { out.put(pkg, cached); continue; }
             App a = new App();
             a.pkg = pkg;
+            a.updated = updated;
             CharSequence l = r.loadLabel(pm);
             a.label = l == null ? pkg : l.toString().trim();
-            try {
-                a.banner = ai.loadBanner(pm);
-                if (a.banner == null) a.banner = ai.applicationInfo.loadBanner(pm);
-            } catch (Exception ignored) { }
-            try {
-                a.icon = r.loadIcon(pm);
-            } catch (Exception ignored) { }
+            // Ask for the sharpest version of the art the app ships, so tiles stay crisp when scaled up
+            int bannerId = ai.banner != 0 ? ai.banner : ai.applicationInfo.banner;
+            a.banner = hiRes(pm, ai, bannerId, android.util.DisplayMetrics.DENSITY_XXHIGH);
+            if (a.banner == null) {
+                try {
+                    a.banner = ai.loadBanner(pm);
+                    if (a.banner == null) a.banner = ai.applicationInfo.loadBanner(pm);
+                } catch (Exception ignored) { }
+            }
+            a.icon = hiRes(pm, ai, ai.getIconResource(), android.util.DisplayMetrics.DENSITY_XXXHIGH);
+            if (a.icon == null) {
+                try { a.icon = r.loadIcon(pm); } catch (Exception ignored) { }
+            }
+            a.artBmp = a.banner != null ? TileView.toBitmap(a.banner, 512, 288) : null;
+            a.iconBmp = a.icon != null ? TileView.toBitmap(a.icon, 256, 256) : null;
+            a.accent = TileView.pickAccent(a.artBmp != null ? a.artBmp : a.iconBmp);
+            a.banner = null; // bitmaps are all we keep
+            a.icon = null;
+            cache.put(pkg, a);
             out.put(pkg, a);
+        }
+    }
+
+    private static Drawable hiRes(PackageManager pm, ActivityInfo ai, int resId, int density) {
+        if (resId == 0) return null;
+        try {
+            android.content.res.Resources res = pm.getResourcesForApplication(ai.applicationInfo);
+            return res.getDrawableForDensity(resId, density, null);
+        } catch (Exception e) {
+            return null;
         }
     }
 

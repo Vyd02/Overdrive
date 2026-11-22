@@ -1,132 +1,218 @@
 package com.vyd02.overdrive;
 
+import android.animation.Animator;
 import android.animation.ArgbEvaluator;
+import android.animation.ObjectAnimator;
 import android.animation.ValueAnimator;
 import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.LinearGradient;
-import android.graphics.Matrix;
 import android.graphics.Paint;
+import android.graphics.PorterDuff;
+import android.graphics.PorterDuffColorFilter;
 import android.graphics.RadialGradient;
 import android.graphics.Shader;
-import android.os.SystemClock;
 import android.view.View;
+import android.view.animation.AccelerateDecelerateInterpolator;
+import android.view.animation.LinearInterpolator;
+import android.widget.FrameLayout;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Random;
 
 /**
- * Living console-style background: deep gradient, slow drifting glow orbs that
- * take on the color of whatever app is focused, and floating light specks.
+ * Living console background. Every piece is drawn ONCE into a GPU layer and then only
+ * moved / recolored, so nothing is redrawn per frame and the UI thread stays free.
  */
-public class BackgroundView extends View {
+public class BackgroundView extends FrameLayout {
 
-    private final Paint basePaint = new Paint();
-    private final Paint orbPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint speckPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint vignettePaint = new Paint();
-    private final Matrix m = new Matrix();
-
-    private RadialGradient orbA, orbB, orbC;
+    private final List<Orb> orbs = new ArrayList<>();
+    private final List<Animator> loops = new ArrayList<>();
     private int accent = Color.parseColor("#3DA9FF");
-    private int accentFrom = accent;
     private ValueAnimator colorAnim;
-
-    private static final int SPECKS = 46;
-    private final float[] sx = new float[SPECKS], sy = new float[SPECKS], ss = new float[SPECKS],
-            sp = new float[SPECKS], sv = new float[SPECKS];
-    private final long start = SystemClock.uptimeMillis();
+    private boolean built;
     private boolean running = true;
 
     public BackgroundView(Context c) {
         super(c);
-        Random r = new Random(7);
-        for (int i = 0; i < SPECKS; i++) {
-            sx[i] = r.nextFloat();
-            sy[i] = r.nextFloat();
-            ss[i] = 0.6f + r.nextFloat() * 1.8f;
-            sp[i] = r.nextFloat() * 6.28f;
-            sv[i] = 0.004f + r.nextFloat() * 0.012f;
-        }
-        speckPaint.setColor(Color.WHITE);
-        buildOrbs();
-    }
-
-    private void buildOrbs() {
-        int a = accent;
-        int b = shiftHue(accent, 40);
-        int c = shiftHue(accent, -55);
-        orbA = new RadialGradient(0, 0, 1f, new int[]{withAlpha(a, 150), withAlpha(a, 40), 0},
-                new float[]{0f, 0.45f, 1f}, Shader.TileMode.CLAMP);
-        orbB = new RadialGradient(0, 0, 1f, new int[]{withAlpha(b, 110), withAlpha(b, 25), 0},
-                new float[]{0f, 0.5f, 1f}, Shader.TileMode.CLAMP);
-        orbC = new RadialGradient(0, 0, 1f, new int[]{withAlpha(c, 90), 0},
-                new float[]{0f, 1f}, Shader.TileMode.CLAMP);
-    }
-
-    /** Smoothly blend the glow to a new color. */
-    public void setAccent(int color) {
-        if (colorAnim != null) colorAnim.cancel();
-        accentFrom = accent;
-        final int to = color;
-        colorAnim = ValueAnimator.ofFloat(0f, 1f);
-        colorAnim.setDuration(700);
-        final ArgbEvaluator ev = new ArgbEvaluator();
-        colorAnim.addUpdateListener(an -> {
-            accent = (int) ev.evaluate(an.getAnimatedFraction(), accentFrom, to);
-            buildOrbs();
-        });
-        colorAnim.start();
-    }
-
-    public void setRunning(boolean run) {
-        running = run;
-        if (run) invalidate();
+        setClipChildren(true);
     }
 
     @Override
     protected void onSizeChanged(int w, int h, int ow, int oh) {
-        basePaint.setShader(new LinearGradient(0, 0, w * 0.3f, h,
-                new int[]{Color.parseColor("#05070F"), Color.parseColor("#0A0F1F"), Color.parseColor("#04050B")},
-                null, Shader.TileMode.CLAMP));
-        vignettePaint.setShader(new RadialGradient(w / 2f, h / 2f, Math.max(w, h) * 0.75f,
-                new int[]{0, 0, Color.argb(200, 0, 0, 0)}, new float[]{0f, 0.6f, 1f}, Shader.TileMode.CLAMP));
+        super.onSizeChanged(w, h, ow, oh);
+        if (w == 0 || h == 0 || built) return;
+        built = true;
+        post(() -> build(w, h));
     }
 
-    private void drawOrb(Canvas c, RadialGradient g, float cx, float cy, float r) {
-        m.reset();
-        m.setScale(r, r);
-        m.postTranslate(cx, cy);
-        g.setLocalMatrix(m);
-        orbPaint.setShader(g);
-        c.drawCircle(cx, cy, r, orbPaint);
+    private void build(int w, int h) {
+        addView(new Base(getContext()), new LayoutParams(-1, -1));
+
+        int big = (int) (w * 1.0f), mid = (int) (w * 0.8f), small = (int) (w * 0.6f);
+        addOrb(big, 0.62f, 0f, w * 0.80f, h * 0.20f, w * 0.07f, h * 0.10f, 23000, 19000);
+        addOrb(mid, 0.50f, 40f, w * 0.15f, h * 0.88f, w * 0.10f, h * 0.08f, 27000, 21000);
+        addOrb(small, 0.38f, -55f, w * 0.50f, h * 0.50f, w * 0.22f, h * 0.14f, 41000, 33000);
+
+        addSpecks(w, h, 34, 0.7f, 2.0f, 70000, 0.9f);
+        addSpecks(w, h, 40, 0.4f, 1.1f, 140000, 0.5f);
+
+        addView(new Vignette(getContext()), new LayoutParams(-1, -1));
+        applyAccent(accent);
+        setRunning(running);
     }
 
-    @Override
-    protected void onDraw(Canvas c) {
-        int w = getWidth(), h = getHeight();
-        float t = (SystemClock.uptimeMillis() - start) / 1000f;
-        c.drawRect(0, 0, w, h, basePaint);
+    private static final int ORB_PX = 384; // drawn small, scaled up on the GPU (a soft glow loses nothing)
 
-        drawOrb(c, orbA, w * (0.78f + 0.08f * (float) Math.sin(t * 0.13)),
-                h * (0.22f + 0.10f * (float) Math.cos(t * 0.11)), w * 0.55f);
-        drawOrb(c, orbB, w * (0.18f + 0.10f * (float) Math.cos(t * 0.09)),
-                h * (0.85f + 0.08f * (float) Math.sin(t * 0.12)), w * 0.45f);
-        drawOrb(c, orbC, w * (0.50f + 0.25f * (float) Math.sin(t * 0.05)),
-                h * (0.50f + 0.15f * (float) Math.sin(t * 0.07)), w * 0.35f);
+    private void addOrb(int size, float alpha, float hueShift, float cx, float cy,
+                        float dx, float dy, long tx, long ty) {
+        Orb o = new Orb(getContext(), hueShift);
+        o.setAlpha(alpha);
+        LayoutParams lp = new LayoutParams(ORB_PX, ORB_PX);
+        lp.leftMargin = (int) (cx - ORB_PX / 2f); // position via margins so translation is free to animate
+        lp.topMargin = (int) (cy - ORB_PX / 2f);
+        addView(o, lp);
+        float base = (float) size / ORB_PX;
+        o.setScaleX(base);
+        o.setScaleY(base);
+        loop(ObjectAnimator.ofFloat(o, "translationX", -dx, dx), tx);
+        loop(ObjectAnimator.ofFloat(o, "translationY", -dy, dy), ty);
+        loop(ObjectAnimator.ofFloat(o, "scaleX", base * 0.9f, base * 1.1f), (tx + ty) / 2);
+        loop(ObjectAnimator.ofFloat(o, "scaleY", base * 0.9f, base * 1.1f), (tx + ty) / 2);
+        orbs.add(o);
+    }
 
-        float d = getResources().getDisplayMetrics().density;
-        for (int i = 0; i < SPECKS; i++) {
-            float y = (sy[i] - t * sv[i]) % 1f;
-            if (y < 0) y += 1f;
-            float x = sx[i] + 0.01f * (float) Math.sin(t * 0.5 + sp[i]);
-            float tw = 0.5f + 0.5f * (float) Math.sin(t * 1.3 + sp[i]);
-            speckPaint.setAlpha((int) (25 + 90 * tw));
-            c.drawCircle(x * w, y * h, ss[i] * d, speckPaint);
+    private void loop(ObjectAnimator a, long dur) {
+        a.setDuration(dur);
+        a.setRepeatCount(ValueAnimator.INFINITE);
+        a.setRepeatMode(ValueAnimator.REVERSE);
+        a.setInterpolator(new AccelerateDecelerateInterpolator());
+        a.setCurrentPlayTime((long) (Math.random() * dur));
+        loops.add(a);
+    }
+
+    private void addSpecks(int w, int h, int count, float minR, float maxR, long dur, float alpha) {
+        Specks s = new Specks(getContext(), count, minR, maxR, h, (int) dur);
+        s.setAlpha(alpha);
+        addView(s, new LayoutParams(w, h * 2));
+        ObjectAnimator drift = ObjectAnimator.ofFloat(s, "translationY", 0, -h);
+        drift.setDuration(dur);
+        drift.setRepeatCount(ValueAnimator.INFINITE);
+        drift.setInterpolator(new LinearInterpolator());
+        loops.add(drift);
+        ObjectAnimator tw = ObjectAnimator.ofFloat(s, "alpha", alpha * 0.55f, alpha);
+        tw.setDuration(2600 + (long) (Math.random() * 1500));
+        tw.setRepeatCount(ValueAnimator.INFINITE);
+        tw.setRepeatMode(ValueAnimator.REVERSE);
+        loops.add(tw);
+    }
+
+    /** Smoothly blend the glow to a new color. Only recolors the GPU layers; nothing is redrawn. */
+    public void setAccent(int color) {
+        if (colorAnim != null) colorAnim.cancel();
+        final int from = accent;
+        final ArgbEvaluator ev = new ArgbEvaluator();
+        colorAnim = ValueAnimator.ofFloat(0f, 1f);
+        colorAnim.setDuration(650);
+        colorAnim.setInterpolator(new AccelerateDecelerateInterpolator());
+        colorAnim.addUpdateListener(a -> applyAccent((int) ev.evaluate(a.getAnimatedFraction(), from, color)));
+        colorAnim.start();
+    }
+
+    private void applyAccent(int c) {
+        accent = c;
+        for (Orb o : orbs) o.tint(shiftHue(c, o.hueShift));
+    }
+
+    public void setRunning(boolean run) {
+        running = run;
+        for (Animator a : loops) {
+            if (run) {
+                if (!a.isStarted()) a.start();
+                else if (a.isPaused()) a.resume();
+            } else if (a.isRunning()) {
+                a.pause();
+            }
         }
-        c.drawRect(0, 0, w, h, vignettePaint);
+    }
 
-        if (running) postInvalidateDelayed(33); // ~30 fps keeps the TV cool
+    // ---------------- pieces ----------------
+
+    private static class Base extends View {
+        private final Paint p = new Paint(Paint.DITHER_FLAG);
+        Base(Context c) { super(c); }
+        @Override protected void onSizeChanged(int w, int h, int ow, int oh) {
+            p.setShader(new LinearGradient(0, 0, w * 0.3f, h,
+                    new int[]{Color.parseColor("#05070F"), Color.parseColor("#0A0F1F"), Color.parseColor("#04050B")},
+                    null, Shader.TileMode.CLAMP));
+        }
+        @Override protected void onDraw(Canvas c) { c.drawPaint(p); }
+    }
+
+    private static class Vignette extends View {
+        private final Paint p = new Paint(Paint.DITHER_FLAG);
+        Vignette(Context c) { super(c); }
+        @Override protected void onSizeChanged(int w, int h, int ow, int oh) {
+            p.setShader(new RadialGradient(w / 2f, h / 2f, Math.max(w, h) * 0.75f,
+                    new int[]{0, 0, Color.argb(200, 0, 0, 0)}, new float[]{0f, 0.6f, 1f}, Shader.TileMode.CLAMP));
+        }
+        @Override protected void onDraw(Canvas c) { c.drawPaint(p); }
+    }
+
+    /** White soft glow drawn once into a layer; the layer paint tints it. */
+    private static class Orb extends View {
+        final float hueShift;
+        private final Paint draw = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.DITHER_FLAG);
+        private final Paint layer = new Paint();
+        Orb(Context c, float hueShift) {
+            super(c);
+            this.hueShift = hueShift;
+            setLayerType(LAYER_TYPE_HARDWARE, layer);
+        }
+        @Override protected void onSizeChanged(int w, int h, int ow, int oh) {
+            draw.setShader(new RadialGradient(w / 2f, h / 2f, w / 2f,
+                    new int[]{Color.argb(255, 255, 255, 255), Color.argb(110, 255, 255, 255),
+                            Color.argb(30, 255, 255, 255), 0},
+                    new float[]{0f, 0.3f, 0.6f, 1f}, Shader.TileMode.CLAMP));
+        }
+        @Override protected void onDraw(Canvas c) { c.drawCircle(getWidth() / 2f, getHeight() / 2f, getWidth() / 2f, draw); }
+        void tint(int color) {
+            layer.setColorFilter(new PorterDuffColorFilter(color, PorterDuff.Mode.SRC_IN));
+            setLayerPaint(layer);
+        }
+    }
+
+    /** A field of light specks drawn twice (stacked) so it can scroll forever without a seam. */
+    private static class Specks extends View {
+        private final float[] x, y, r;
+        private final int tileH;
+        private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        Specks(Context c, int count, float minR, float maxR, int tileH, int seed) {
+            super(c);
+            this.tileH = tileH;
+            float d = c.getResources().getDisplayMetrics().density;
+            Random rnd = new Random(seed);
+            x = new float[count]; y = new float[count]; r = new float[count];
+            for (int i = 0; i < count; i++) {
+                x[i] = rnd.nextFloat();
+                y[i] = rnd.nextFloat() * tileH;
+                r[i] = (minR + rnd.nextFloat() * (maxR - minR)) * d;
+            }
+            p.setColor(Color.WHITE);
+            // no layer: the dots are recorded once and the GPU just replays them while sliding
+        }
+        @Override protected void onDraw(Canvas c) {
+            int w = getWidth();
+            for (int pass = 0; pass < 2; pass++) {
+                float off = pass * tileH;
+                for (int i = 0; i < x.length; i++) {
+                    p.setAlpha(60 + (i * 37) % 140);
+                    c.drawCircle(x[i] * w, y[i] + off, r[i], p);
+                }
+            }
+        }
     }
 
     static int withAlpha(int c, int a) {
