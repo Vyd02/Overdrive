@@ -1,9 +1,13 @@
 package com.vyd02.overdrive;
 
 import android.accessibilityservice.AccessibilityService;
+import android.content.BroadcastReceiver;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
+import android.os.Handler;
+import android.os.Looper;
 import android.provider.Settings;
 import android.view.accessibility.AccessibilityEvent;
 
@@ -28,6 +32,28 @@ public class HomeGuardService extends AccessibilityService {
         Intent i = new Intent(this, MainActivity.class)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
         try { startActivity(i); } catch (Exception ignored) { }
+    }
+
+    /** TV waking from standby (the normal power button) — open Overdrive right away. */
+    private final BroadcastReceiver wake = new BroadcastReceiver() {
+        @Override public void onReceive(Context c, Intent i) {
+            if (!getSharedPreferences("overdrive", MODE_PRIVATE).getBoolean(BootReceiver.KEY_OPEN_ON_START, true)) return;
+            new Handler(Looper.getMainLooper()).postDelayed(() -> BootReceiver.open(HomeGuardService.this), 400);
+        }
+    };
+
+    @Override
+    protected void onServiceConnected() {
+        super.onServiceConnected();
+        IntentFilter f = new IntentFilter(Intent.ACTION_SCREEN_ON);
+        f.addAction(Intent.ACTION_USER_PRESENT);
+        try { registerReceiver(wake, f); } catch (Exception ignored) { }
+    }
+
+    @Override
+    public void onDestroy() {
+        try { unregisterReceiver(wake); } catch (Exception ignored) { }
+        super.onDestroy();
     }
 
     @Override

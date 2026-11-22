@@ -11,7 +11,7 @@ Console-style home screen for Fire TV. Big animated app tiles, clock and weather
 
 ## Releasing an update
 1. Bump `versionCode` and `versionName` in `app/build.gradle`.
-2. Build the release APK and copy it to `dist/Overdrive.apk`.
+2. Build the release APK and copy it to `dist/Overdrive.apk` and `dist/Overdrive-<versionCode>.apk` (the numbered copy dodges GitHub file caching). Delete the previous numbered copy.
 3. Set the same `versionCode` and `versionName` in `version.json`.
 4. Commit and push. Overdrive checks `version.json` every 30 minutes while it's open, downloads the new APK, and opens the TV's Install screen.
 

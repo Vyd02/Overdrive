@@ -651,6 +651,14 @@ public class MainActivity extends Activity {
                 && repo.prefs().getBoolean(HomeGuardService.KEY_GUARD_ON, true);
         items.add(new Item("Back & Home guard", guardOn ? "On · Back out of apps lands here"
                 : "Off · Back can drop you on Amazon's home", this::showGuardPanel));
+        boolean openOnStart = repo.prefs().getBoolean(BootReceiver.KEY_OPEN_ON_START, true);
+        items.add(new Item("Open when TV turns on", openOnStart
+                ? (HomeGuardService.isEnabled(this) ? "On" : "On · turn on the guard so it works from standby")
+                : "Off", () -> {
+            repo.prefs().edit().putBoolean(BootReceiver.KEY_OPEN_ON_START, !openOnStart).apply();
+            showBanner(openOnStart ? "Won't open on power-up" : "Opens as soon as the TV turns on");
+            showMainMenu();
+        }));
         items.add(new Item("Hidden apps", hiddenCount == 0 ? "None hidden" : hiddenCount + " hidden", this::showHiddenApps));
         items.add(new Item("Weather location", repo.prefs().getString(Weather.KEY_NAME, "Automatic"), this::showWeatherPanel));
         items.add(new Item(pendingRelease != null ? "Install update" : "Check for updates",

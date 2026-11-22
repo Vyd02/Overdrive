@@ -1,6 +1,6 @@
 {
-  "versionCode": 3,
-  "versionName": "1.0.2",
-  "apk": "dist/Overdrive.apk",
-  "notes": "Updates now install from GitHub on their own."
+  "versionCode": 4,
+  "versionName": "1.0.3",
+  "apk": "dist/Overdrive-4.apk",
+  "notes": "Opens as soon as the TV turns on. Updates install from GitHub on their own."
 }
