@@ -1,6 +1,6 @@
 {
-  "versionCode": 5,
-  "versionName": "1.1.0",
-  "apk": "dist/Overdrive-5.apk",
-  "notes": "Much smoother: GPU-animated background, sharper app art, no stutter when moving between tiles."
+  "versionCode": 6,
+  "versionName": "1.1.1",
+  "apk": "dist/Overdrive-6.apk",
+  "notes": "Correct setup steps for the Back & Home guard."
 }

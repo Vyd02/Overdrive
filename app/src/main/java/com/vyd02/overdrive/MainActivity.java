@@ -709,18 +709,20 @@ public class MainActivity extends Activity {
         boolean on = repo.prefs().getBoolean(HomeGuardService.KEY_GUARD_ON, true);
         List<Item> items = new ArrayList<>();
         if (!enabled) {
-            items.add(new Item("Open Accessibility settings", "Turn on \"Overdrive Back & Home guard\"", () -> {
+            items.add(new Item("Check again", "After running the command from your phone", () -> {
                 repo.prefs().edit().putBoolean(HomeGuardService.KEY_GUARD_ON, true).apply();
-                try {
-                    startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
-                } catch (Exception e) {
-                    openFireSettings();
-                }
+                if (HomeGuardService.isEnabled(this)) { showBanner("Guard is on"); closePanel(true); }
+                else showBanner("Not on yet");
             }));
+            items.add(new Item("Open Developer options", "Turn on ADB debugging", this::openFireSettings));
             items.add(new Item("Later", null, () -> closePanel(true)));
             showPanel("Back & Home guard",
-                    "When Back takes you out of an app, Fire TV drops you on Amazon's home. "
-                            + "This sends you right back here.\n\nSettings → Accessibility → Overdrive Back & Home guard → ON",
+                    "Fire TV hides this switch, so it's turned on once from your phone:\n\n"
+                            + "1. My Fire TV → Developer options → ADB debugging ON\n"
+                            + "2. My Fire TV → About → Network: note the IP address\n"
+                            + "3. On your phone, open an ADB app, connect to that IP, allow it on the TV\n"
+                            + "4. Run:\nsettings put secure enabled_accessibility_services com.vyd02.overdrive/com.vyd02.overdrive.HomeGuardService\n"
+                            + "settings put secure accessibility_enabled 1",
                     items, null);
         } else {
             items.add(new Item(on ? "Turn off" : "Turn on", on ? "Let Amazon's home stay open" : "Always come back to Overdrive", () -> {
