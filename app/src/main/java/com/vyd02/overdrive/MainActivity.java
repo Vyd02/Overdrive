@@ -127,9 +127,18 @@ public class MainActivity extends Activity {
     // Lifecycle
     // =====================================================================
 
+    private boolean crashMode; // showing the last crash instead of the home screen
+
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
+        String crash = CrashScreen.pending(this);
+        if (crash != null) {
+            crashMode = true;
+            CrashScreen.show(this, crash);
+            return;
+        }
+        crashMode = false;
         getWindow().setFormat(PixelFormat.RGBA_8888);
         getWindow().setBackgroundDrawable(null);
         repo = new AppRepo(this);
@@ -166,6 +175,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        if (sound == null) return; // crash screen was shown, nothing else was set up
         try { unregisterReceiver(pkgReceiver); } catch (Exception ignored) { }
         ui.removeCallbacksAndMessages(null);
         io.shutdownNow();
@@ -175,6 +185,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        if (crashMode || content == null) return;
         lastInteraction = System.currentTimeMillis();
         reloadApps(false);
         if (launching) {
@@ -198,6 +209,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
+        if (crashMode || content == null) return;
         if (overlay.getVisibility() == View.VISIBLE) closePanel(false);
         if (hub.isOpen()) closeSettings();
         if (search.isOpen()) closeSearch();
@@ -1858,6 +1870,7 @@ public class MainActivity extends Activity {
 
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
+        if (crashMode || content == null) return super.dispatchKeyEvent(event);
         int code = event.getKeyCode();
         boolean down = event.getAction() == KeyEvent.ACTION_DOWN;
         boolean up = event.getAction() == KeyEvent.ACTION_UP;

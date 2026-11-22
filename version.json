@@ -1,6 +1,6 @@
 {
-  "versionCode": 21,
-  "versionName": "2.5.1",
-  "apk": "dist/Overdrive-21.apk",
-  "notes": "The intro never draws more than 1080p, even on a 4K screen (the TV upscales it for free)."
+  "versionCode": 22,
+  "versionName": "2.5.2",
+  "apk": "dist/Overdrive-22.apk",
+  "notes": "Crash fix attempt plus a crash screen that shows the exact error if anything goes wrong."
 }

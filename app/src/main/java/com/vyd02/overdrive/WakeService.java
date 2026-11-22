@@ -33,7 +33,10 @@ public class WakeService extends Service {
     static void start(Context c) {
         try {
             Intent i = new Intent(c, WakeService.class);
-            if (Build.VERSION.SDK_INT >= 26) c.startForegroundService(i); else c.startService(i);
+            // From the open app a plain start is allowed and can't trip Android's 5-second
+            // "foreground service" deadline; only the boot receiver needs the foreground start.
+            if (Build.VERSION.SDK_INT >= 26 && !(c instanceof android.app.Activity)) c.startForegroundService(i);
+            else c.startService(i);
         } catch (Exception ignored) { }
     }
 

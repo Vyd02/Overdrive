@@ -168,7 +168,7 @@ public class IntroView extends SurfaceView implements SurfaceHolder.Callback, Ch
     public void surfaceCreated(SurfaceHolder holder) {
         alive = true;
         revealedPosted = false;
-        thread = new HandlerThread("sora-intro", Process.THREAD_PRIORITY_DISPLAY);
+        thread = new HandlerThread("sora-intro", Process.THREAD_PRIORITY_DEFAULT);
         thread.start();
         new Handler(thread.getLooper()).post(() -> {
             choreo = Choreographer.getInstance();
