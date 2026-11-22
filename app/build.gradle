@@ -10,9 +10,9 @@ android {
         applicationId 'com.vyd02.overdrive'
         minSdk 25
         targetSdk 34
-        // Bump BOTH of these for every release. The GitHub release tag must be v<versionName>.
-        versionCode 2
-        versionName '1.0.1'
+        // Bump BOTH for every release, and match them in version.json.
+        versionCode 3
+        versionName '1.0.2'
         buildConfigField 'String', 'GITHUB_REPO', '"Vyd02/Overdrive"'
     }
 

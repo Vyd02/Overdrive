@@ -6,7 +6,6 @@ import android.content.Intent;
 import android.content.pm.PackageInstaller;
 import android.os.Build;
 
-import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.InputStream;
@@ -15,8 +14,8 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 
 /**
- * Self-update from GitHub Releases. Publish a release tagged v1.2.3 with the APK attached;
- * Overdrive compares that to its own version and installs it.
+ * Self-update straight from the GitHub repo: version.json says the newest versionCode,
+ * dist/Overdrive.apk is the build. Push both and every TV picks it up.
  */
 final class Updater {
 
@@ -30,24 +29,17 @@ final class Updater {
 
     private Updater() { }
 
-    /** Returns the newer release, or null when already up to date. */
+    static final String RAW = "https://raw.githubusercontent.com/" + BuildConfig.GITHUB_REPO + "/main/";
+
+    /** Reads version.json from the repo. Returns the newer build, or null when already up to date. */
     static Release check() throws Exception {
-        JSONObject j = new JSONObject(Net.get("https://api.github.com/repos/" + BuildConfig.GITHUB_REPO + "/releases/latest"));
-        String tag = j.optString("tag_name", "").replaceFirst("^[vV]", "");
-        if (compare(tag, BuildConfig.VERSION_NAME) <= 0) return null;
-        JSONArray assets = j.optJSONArray("assets");
-        if (assets == null) return null;
-        for (int i = 0; i < assets.length(); i++) {
-            JSONObject a = assets.getJSONObject(i);
-            if (a.optString("name").toLowerCase().endsWith(".apk")) {
-                Release r = new Release();
-                r.version = tag;
-                r.apkUrl = a.getString("browser_download_url");
-                r.notes = j.optString("body", "");
-                return r;
-            }
-        }
-        return null;
+        JSONObject j = new JSONObject(Net.get(RAW + "version.json?t=" + System.currentTimeMillis()));
+        if (j.optInt("versionCode", 0) <= BuildConfig.VERSION_CODE) return null;
+        Release r = new Release();
+        r.version = j.optString("versionName", "new");
+        r.apkUrl = RAW + j.optString("apk", "dist/Overdrive.apk") + "?v=" + j.optInt("versionCode");
+        r.notes = j.optString("notes", "");
+        return r;
     }
 
     /** Downloads the APK straight into the system installer. The TV then shows its own Install prompt. */

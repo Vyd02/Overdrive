@@ -96,7 +96,6 @@ public class MainActivity extends Activity {
         reloadApps(true);
         startClock();
         refreshWeather();
-        ui.postDelayed(this::autoCheckUpdate, 4000);
         ui.postDelayed(this::maybePromptGuard, 1800);
 
         IntentFilter f = new IntentFilter();
@@ -125,6 +124,7 @@ public class MainActivity extends Activity {
         super.onResume();
         bg.setRunning(true);
         reloadApps(false);
+        ui.postDelayed(this::autoCheckUpdate, 2500);
         // slide the dashboard back in after returning from an app
         content.setAlpha(0f);
         content.setScaleX(1.04f);
@@ -918,9 +918,15 @@ public class MainActivity extends Activity {
     // Updates
     // =====================================================================
 
+    private boolean installing;
+    private final Runnable updateLoop = this::autoCheckUpdate;
+
+    /** Runs on its own: checks GitHub every 30 min while Overdrive is open, downloads, and opens the Install screen. */
     private void autoCheckUpdate() {
+        ui.removeCallbacks(updateLoop);
+        ui.postDelayed(updateLoop, 30 * 60 * 1000L);
         long last = repo.prefs().getLong(KEY_LAST_UPDATE_CHECK, 0);
-        if (System.currentTimeMillis() - last < 6 * 3600 * 1000L) return;
+        if (installing || !hasWindowFocus() || System.currentTimeMillis() - last < 30 * 60 * 1000L) return;
         io.execute(() -> {
             try {
                 Updater.Release r = Updater.check();
@@ -928,10 +934,13 @@ public class MainActivity extends Activity {
                 if (r != null) ui.post(() -> {
                     pendingRelease = r;
                     updateDot.setVisibility(View.VISIBLE);
-                    updateDot.setScaleX(0f);
-                    updateDot.setScaleY(0f);
-                    updateDot.animate().scaleX(1f).scaleY(1f).setInterpolator(new OvershootInterpolator(3f)).start();
-                    showBanner("Update " + r.version + " ready  ·  open ⚙ Menu to install");
+                    if (overlay.getVisibility() == View.VISIBLE) return; // don't yank a menu out from under you
+                    if (Build.VERSION.SDK_INT >= 26 && !getPackageManager().canRequestPackageInstalls()) {
+                        startInstall(r); // shows the one-time permission setup
+                    } else {
+                        showBanner("Updating to " + r.version + "…");
+                        startInstall(r);
+                    }
                 });
             } catch (Exception ignored) { }
         });
@@ -980,6 +989,8 @@ public class MainActivity extends Activity {
                     items, null);
             return;
         }
+        if (installing) return;
+        installing = true;
         showBanner("Downloading update…");
         closePanel(true);
         io.execute(() -> {
@@ -987,9 +998,11 @@ public class MainActivity extends Activity {
                 Updater.install(this, r, pct -> {
                     if (pct % 10 == 0) ui.post(() -> showBanner("Downloading update… " + pct + "%"));
                 });
-                ui.post(() -> showBanner("Almost there, confirm Install on the next screen"));
+                ui.post(() -> showBanner("Press Install to finish the update"));
             } catch (Exception e) {
                 ui.post(() -> showBanner("Update failed: " + (e.getMessage() == null ? "download error" : e.getMessage())));
+            } finally {
+                ui.postDelayed(() -> installing = false, 60 * 1000L);
             }
         });
     }
