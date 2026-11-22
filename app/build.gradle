@@ -11,8 +11,8 @@ android {
         minSdk 25
         targetSdk 34
         // Bump BOTH for every release, and match them in version.json.
-        versionCode 16
-        versionName '2.4.0'
+        versionCode 17
+        versionName '2.4.1'
         buildConfigField 'String', 'GITHUB_REPO', '"Vyd02/Overdrive"'
     }
 

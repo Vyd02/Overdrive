@@ -1891,6 +1891,37 @@ public class MainActivity extends Activity {
             return true;
         }
 
+        // Console-style routing between the rows and the spotlight buttons:
+        // up from a tile -> its Open/Options/Pin, down -> back to that tile, up again -> the row above.
+        if (down && !panelOpen && !hub.isOpen() && !search.isOpen()
+                && (code == KeyEvent.KEYCODE_DPAD_UP || code == KeyEvent.KEYCODE_DPAD_DOWN)) {
+            View f = getCurrentFocus();
+            boolean onTile = f instanceof TileView && f == heroTile && isRowTile(f);
+            boolean onButton = f == actOpen || f == actOptions || f == actPin;
+            if (code == KeyEvent.KEYCODE_DPAD_UP && onTile && firstVisibleAction() != null) {
+                lastDy = -1;
+                sound.play(Sound.MOVE);
+                firstVisibleAction().requestFocus();
+                return true;
+            }
+            if (onButton && heroTile != null && heroTile.isAttachedToWindow()) {
+                if (code == KeyEvent.KEYCODE_DPAD_DOWN) {
+                    lastDy = 1;
+                    sound.play(Sound.MOVE);
+                    heroTile.requestFocus();
+                    return true;
+                }
+                View above = tileInRowAbove(heroTile);
+                if (above != null) {
+                    lastDy = -1;
+                    sound.play(Sound.MOVE);
+                    above.requestFocus();
+                    return true;
+                }
+                // no row above: fall through, so Up reaches the top bar
+            }
+        }
+
         if (down && isDpad(code)) {
             View f = getCurrentFocus();
             boolean valueRow = f != null && f.getTag(R.id.value_row) != null
@@ -1923,6 +1954,50 @@ public class MainActivity extends Activity {
         }
         if (code == KeyEvent.KEYCODE_SEARCH && up && !panelOpen && !hub.isOpen()) { openSearch(); return true; }
         return super.dispatchKeyEvent(event);
+    }
+
+    private View firstVisibleAction() {
+        if (actOpen.getVisibility() == View.VISIBLE) return actOpen;
+        if (actOptions.getVisibility() == View.VISIBLE) return actOptions;
+        return null;
+    }
+
+    /** True for tiles that live in the home screen's rows. */
+    private boolean isRowTile(View v) {
+        View p = (View) v.getParent();
+        for (int i = 0; i < 4 && p != null; i++) {
+            if (p == rowsBox) return true;
+            p = p.getParent() instanceof View ? (View) p.getParent() : null;
+        }
+        return false;
+    }
+
+    /** The tile in the row above that sits closest (left to right) to this one. */
+    private View tileInRowAbove(View tile) {
+        View row = tile;
+        while (row != null && row.getParent() != rowsBox) row = row.getParent() instanceof View ? (View) row.getParent() : null;
+        if (row == null) return null;
+        int idx = rowsBox.indexOfChild(row);
+        int[] here = new int[2];
+        tile.getLocationOnScreen(here);
+        for (int r = idx - 1; r >= 0; r--) {
+            View prev = rowsBox.getChildAt(r);
+            if (!(prev instanceof ViewGroup) || ((ViewGroup) prev).getChildCount() < 2) continue;
+            View hsv = ((ViewGroup) prev).getChildAt(1);
+            if (!(hsv instanceof Strip)) continue;
+            ViewGroup strip = (ViewGroup) ((ViewGroup) ((Strip) hsv).getChildAt(0)).getChildAt(0);
+            View best = null;
+            int bestDist = Integer.MAX_VALUE;
+            for (int i = 0; i < strip.getChildCount(); i++) {
+                View c = strip.getChildAt(i);
+                int[] loc = new int[2];
+                c.getLocationOnScreen(loc);
+                int dist = Math.abs(loc[0] - here[0]);
+                if (dist < bestDist) { bestDist = dist; best = c; }
+            }
+            if (best != null) return best;
+        }
+        return null;
     }
 
     private AppRepo.App byPkgFromFocus() {
