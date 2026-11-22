@@ -42,7 +42,8 @@ public class IntroView extends SurfaceView implements SurfaceHolder.Callback, Ch
     private static final float REVEAL = 0.8f;
     private static final int[] RAINBOW = {0xFFFF3D71, 0xFFFF9F1C, 0xFFFFE14D, 0xFF3DFFB0, 0xFF2BD9FF, 0xFF6C63FF, 0xFFD65CFF};
 
-    private final float d;
+    private float d;                 // dp in SURFACE pixels (the surface may be smaller than the screen)
+    private final float density;
     private final Handler main = new Handler(Looper.getMainLooper());
     private HandlerThread thread;
     private Choreographer choreo;
@@ -89,7 +90,8 @@ public class IntroView extends SurfaceView implements SurfaceHolder.Callback, Ch
 
     public IntroView(Context c) {
         super(c);
-        d = c.getResources().getDisplayMetrics().density;
+        density = c.getResources().getDisplayMetrics().density;
+        d = density;
         brand = Ui.brand(c, true);
         setZOrderOnTop(true);                                   // above the home screen...
         getHolder().setFormat(PixelFormat.TRANSLUCENT);         // ...and see-through where we don't draw
@@ -124,6 +126,16 @@ public class IntroView extends SurfaceView implements SurfaceHolder.Callback, Ch
     }
 
     // ---------------------------------------------------------------- control (main thread)
+
+    @Override
+    protected void onSizeChanged(int vw, int vh, int ow, int oh) {
+        super.onSizeChanged(vw, vh, ow, oh);
+        // Never draw more than 1080p: on a 4K screen the TV's scaler stretches it for free.
+        if (vw > 1920) {
+            float k = 1920f / vw;
+            getHolder().setFixedSize(1920, Math.round(vh * k));
+        }
+    }
 
     public void play(int accentColor, Runnable reveal) {
         onReveal = reveal;
@@ -167,6 +179,8 @@ public class IntroView extends SurfaceView implements SurfaceHolder.Callback, Ch
 
     @Override
     public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
+        int vw = getWidth() > 0 ? getWidth() : width;
+        d = density * width / (float) vw;   // keep every size the same on screen at any surface size
         w = width;
         h = height;
     }
