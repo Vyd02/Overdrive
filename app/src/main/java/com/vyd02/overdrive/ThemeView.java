@@ -21,7 +21,8 @@ import android.view.SurfaceView;
 public class ThemeView extends SurfaceView implements SurfaceHolder.Callback, Choreographer.FrameCallback {
 
     static final int RW = 1280, RH = 720;                       // the themes' drawing coordinates
-    private static final int[][] TIERS = {{1920, 1080}, {1280, 720}, {960, 540}}; // full HD first
+    // 1280x720 is the sweet spot: soft glows look identical to 1080p at less than half the work
+    private static final int[][] TIERS = {{1280, 720}, {1088, 612}, {960, 540}};
 
     private volatile Themes.Theme theme;
     private final Themes.Input input = new Themes.Input();
@@ -68,6 +69,10 @@ public class ThemeView extends SurfaceView implements SurfaceHolder.Callback, Ch
 
     public void select() { input.selectsA.incrementAndGet(); }
 
+    private volatile boolean paused;
+    /** Stop drawing (e.g. while the intro covers the screen) so the TV's graphics chip has all its power for that. */
+    public void setPaused(boolean p) { paused = p; if (!p) lastNs = 0; }
+
     public void setAccent(int color) { input.targetAccent = color; }
 
     // ---- surface lifecycle ----
@@ -111,6 +116,7 @@ public class ThemeView extends SurfaceView implements SurfaceHolder.Callback, Ch
     public void doFrame(long frameNs) {
         if (!alive) return;
         choreo.postFrameCallback(this); // book the next vsync first
+        if (paused) return;
 
         if (lastNs == 0) { lastNs = frameNs; startNs = frameNs; }
         long interval = frameNs - lastNs;

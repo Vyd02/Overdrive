@@ -1,8 +1,5 @@
 package com.vyd02.overdrive;
 
-import android.animation.Animator;
-import android.animation.AnimatorListenerAdapter;
-import android.animation.ValueAnimator;
 import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Color;
@@ -11,38 +8,58 @@ import android.graphics.LinearGradient;
 import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.Path;
+import android.graphics.PixelFormat;
 import android.graphics.PorterDuff;
 import android.graphics.PorterDuffXfermode;
 import android.graphics.RadialGradient;
 import android.graphics.RectF;
 import android.graphics.Shader;
 import android.graphics.SweepGradient;
+import android.graphics.Typeface;
+import android.os.Build;
+import android.os.Handler;
+import android.os.HandlerThread;
+import android.os.Looper;
+import android.os.Process;
+import android.view.Choreographer;
+import android.view.SurfaceHolder;
+import android.view.SurfaceView;
 import android.view.View;
-import android.view.animation.LinearInterpolator;
 
 import java.util.Random;
 
 /**
- * Sora's power-up intro, "chromatic bloom". Light is added, not painted (additive blending),
- * so everything glows like real light on a dark screen:
- * star dust and color clouds, a spark with a lens flare, rainbow ribbons that fold into a
- * spinning ring with fine tech hairlines, comets spiraling in, S-O-R-A snapping in with a
- * color split, a rainbow shockwave with a flare, then an iris opening onto the home screen.
+ * Sora's power-up intro, "chromatic bloom".
+ *
+ * Drawn on its OWN thread, locked to the TV's refresh (like a game), on a transparent surface
+ * that sits above the home screen. Nothing the app does on the main thread (loading the app list,
+ * building rows) can make it stutter. Particles and stars are batched into a few draw calls.
  */
-public class IntroView extends View {
+public class IntroView extends SurfaceView implements SurfaceHolder.Callback, Choreographer.FrameCallback {
 
     private static final String WORD = "SORA";
-    private static final long DURATION = 3200;
+    private static final long DURATION_NS = 3_200_000_000L;
     private static final float REVEAL = 0.8f;
     private static final int[] RAINBOW = {0xFFFF3D71, 0xFFFF9F1C, 0xFFFFE14D, 0xFF3DFFB0, 0xFF2BD9FF, 0xFF6C63FF, 0xFFD65CFF};
 
     private final float d;
+    private final Handler main = new Handler(Looper.getMainLooper());
+    private HandlerThread thread;
+    private Choreographer choreo;
+    private volatile boolean alive, playing;
+    private volatile long skipToNs = -1;
+    private long startNs;
+    private Runnable onReveal;
+    private boolean revealed;
+    private int w, h;
+
+    // paints (render thread only)
     private final PorterDuffXfermode add = new PorterDuffXfermode(PorterDuff.Mode.ADD);
     private final Paint bg = new Paint(Paint.DITHER_FLAG);
     private final Paint ring = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint hair = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint ribbon = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint dot = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint pts = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint glow = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.DITHER_FLAG);
     private final Paint letter = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.SUBPIXEL_TEXT_FLAG);
     private final Paint letterAdd = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.SUBPIXEL_TEXT_FLAG);
@@ -51,91 +68,159 @@ public class IntroView extends View {
     private final RectF arc = new RectF();
     private final Matrix mx = new Matrix();
     private DashPathEffect dashFine, dashLong;
-
     private SweepGradient sweep;
     private RadialGradient soft;
     private LinearGradient textBand;
-    private int lastW;
+    private final Typeface brand;
 
-    private static final int N = 140;                  // comets
-    private final float[] pa = new float[N], pr = new float[N], ps = new float[N], pv = new float[N];
-    private final int[] pc = new int[N];
-    private static final int S = 220;                  // star dust
-    private final float[] sx = new float[S], sy = new float[S], sr = new float[S], sph = new float[S], sdep = new float[S];
+    // comets, grouped by color x size so each group is ONE draw call
+    private static final int N = 105, SIZES = 3;
+    private final float[] pa = new float[N], pr = new float[N], pv = new float[N];
+    private final int[] pcol = new int[N], psz = new int[N];
+    private final float[][] bucket = new float[RAINBOW.length * SIZES][];
+    private final int[] bucketN = new int[RAINBOW.length * SIZES];
+    private static final float[] SIZE_DP = {1.4f, 2.2f, 3.2f};
 
-    private float p;
-    private ValueAnimator anim;
-    private Runnable onReveal;
-    private boolean revealed;
+    // star dust, 4 twinkle groups = 4 draw calls
+    private static final int S = 200, SG = 4;
+    private final float[] sx = new float[S], sy = new float[S], sdep = new float[S];
+    private final float[][] starPts = new float[SG][];
+    private final int[] starN = new int[SG];
 
     public IntroView(Context c) {
         super(c);
         d = c.getResources().getDisplayMetrics().density;
+        brand = Ui.brand(c, true);
+        setZOrderOnTop(true);                                   // above the home screen...
+        getHolder().setFormat(PixelFormat.TRANSLUCENT);         // ...and see-through where we don't draw
+        getHolder().addCallback(this);
+        setVisibility(GONE);
+
         ring.setStyle(Paint.Style.STROKE);
         ring.setXfermode(add);
         hair.setStyle(Paint.Style.STROKE);
         ribbon.setStyle(Paint.Style.STROKE);
         ribbon.setStrokeCap(Paint.Cap.ROUND);
         ribbon.setXfermode(add);
-        dot.setXfermode(add);
+        pts.setStrokeCap(Paint.Cap.ROUND);
+        pts.setXfermode(add);
         glow.setXfermode(add);
-        letter.setTypeface(Ui.brand(c, true));
-        letter.setTextAlign(Paint.Align.CENTER);
-        letterAdd.setTypeface(Ui.brand(c, true));
-        letterAdd.setTextAlign(Paint.Align.CENTER);
+        for (Paint p : new Paint[]{letter, letterAdd, shimmer}) { p.setTypeface(brand); p.setTextAlign(Paint.Align.CENTER); }
         letterAdd.setXfermode(add);
-        shimmer.setTypeface(Ui.brand(c, true));
-        shimmer.setTextAlign(Paint.Align.CENTER);
         iris.setFillType(Path.FillType.EVEN_ODD);
+
         Random r = new Random(11);
         for (int i = 0; i < N; i++) {
             pa[i] = r.nextFloat() * 6.2832f;
             pr[i] = 0.75f + r.nextFloat() * 0.6f;
-            ps[i] = 1.0f + r.nextFloat() * 2.4f;
             pv[i] = 0.6f + r.nextFloat() * 1.4f;
-            pc[i] = RAINBOW[i % RAINBOW.length];
+            pcol[i] = i % RAINBOW.length;
+            psz[i] = r.nextInt(SIZES);
         }
+        for (int b = 0; b < bucket.length; b++) bucket[b] = new float[N * 2];
         Random r2 = new Random(5);
-        for (int i = 0; i < S; i++) {
-            sx[i] = r2.nextFloat(); sy[i] = r2.nextFloat();
-            sr[i] = 0.3f + r2.nextFloat() * 0.9f; sph[i] = r2.nextFloat() * 6.28f; sdep[i] = 0.2f + r2.nextFloat();
-        }
+        for (int i = 0; i < S; i++) { sx[i] = r2.nextFloat(); sy[i] = r2.nextFloat(); sdep[i] = 0.2f + r2.nextFloat(); }
+        for (int g = 0; g < SG; g++) starPts[g] = new float[S * 2];
     }
 
-    // ---------------------------------------------------------------- control
+    // ---------------------------------------------------------------- control (main thread)
 
     public void play(int accentColor, Runnable reveal) {
         onReveal = reveal;
         revealed = false;
-        setVisibility(VISIBLE);
-        setAlpha(1f);
-        if (anim != null) anim.cancel();
-        anim = ValueAnimator.ofFloat(0f, 1f);
-        anim.setDuration(DURATION);
-        anim.setInterpolator(new LinearInterpolator());
-        anim.addUpdateListener(a -> {
-            p = (float) a.getAnimatedValue();
-            if (!revealed && p >= REVEAL) fireReveal();
-            invalidate();
-        });
-        anim.addListener(new AnimatorListenerAdapter() {
-            @Override public void onAnimationEnd(Animator a) {
-                if (!revealed) fireReveal();
-                setVisibility(GONE);
-            }
-        });
-        anim.start();
+        skipToNs = -1;
+        playing = true;
+        setVisibility(VISIBLE); // creating the surface starts the render thread
     }
 
-    public void skip() {
-        if (anim != null && anim.isRunning() && p < REVEAL) anim.setCurrentPlayTime((long) (DURATION * REVEAL));
-    }
+    public void skip() { skipToNs = (long) (DURATION_NS * REVEAL); }
 
-    public boolean isPlaying() { return getVisibility() == VISIBLE; }
+    public boolean isPlaying() { return playing; }
+
+    private void finishOnMain() {
+        main.post(() -> {
+            if (!revealed) fireReveal();
+            playing = false;
+            setVisibility(GONE);
+        });
+    }
 
     private void fireReveal() {
         revealed = true;
         if (onReveal != null) { Runnable r = onReveal; onReveal = null; r.run(); }
+    }
+
+    // ---------------------------------------------------------------- surface + thread
+
+    @Override
+    public void surfaceCreated(SurfaceHolder holder) {
+        alive = true;
+        revealedPosted = false;
+        thread = new HandlerThread("sora-intro", Process.THREAD_PRIORITY_DISPLAY);
+        thread.start();
+        new Handler(thread.getLooper()).post(() -> {
+            choreo = Choreographer.getInstance();
+            startNs = 0;
+            choreo.postFrameCallback(this);
+        });
+    }
+
+    @Override
+    public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
+        w = width;
+        h = height;
+    }
+
+    @Override
+    public void surfaceDestroyed(SurfaceHolder holder) {
+        alive = false;
+        if (thread != null) {
+            thread.quitSafely();
+            try { thread.join(400); } catch (InterruptedException ignored) { }
+            thread = null;
+        }
+    }
+
+    @Override
+    public void doFrame(long frameNs) {
+        if (!alive) return;
+        if (startNs == 0) startNs = frameNs;
+        long skip = skipToNs;
+        if (skip >= 0) {
+            if (frameNs - startNs < skip) startNs = frameNs - skip; // only ever jump forward
+            skipToNs = -1;
+        }
+        long el = frameNs - startNs;
+        float p = Math.min(1f, el / (float) DURATION_NS);
+        if (p >= REVEAL && !revealedPosted) { revealedPosted = true; main.post(() -> { if (!revealed) fireReveal(); }); }
+        if (p >= 1f) {
+            clearSurface();
+            revealedPosted = false;
+            finishOnMain();
+            return;
+        }
+        choreo.postFrameCallback(this);
+        SurfaceHolder holder = getHolder();
+        Canvas c = null;
+        try {
+            if (!holder.getSurface().isValid() || w == 0) return;
+            c = Build.VERSION.SDK_INT >= 26 ? holder.lockHardwareCanvas() : holder.lockCanvas();
+            if (c == null) return;
+            c.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR);
+            draw(c, p, el / 1e9f);
+        } catch (Exception ignored) {
+        } finally {
+            if (c != null) try { holder.unlockCanvasAndPost(c); } catch (Exception ignored) { }
+        }
+    }
+    private boolean revealedPosted;
+
+    private void clearSurface() {
+        SurfaceHolder holder = getHolder();
+        try {
+            Canvas c = Build.VERSION.SDK_INT >= 26 ? holder.lockHardwareCanvas() : holder.lockCanvas();
+            if (c != null) { c.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR); holder.unlockCanvasAndPost(c); }
+        } catch (Exception ignored) { }
     }
 
     // ---------------------------------------------------------------- helpers
@@ -149,8 +234,10 @@ public class IntroView extends View {
         return 1f - (float) (Math.exp(-6 * x) * Math.cos(10 * x));
     }
 
-    private void build(int w, int h) {
-        lastW = w;
+    private int builtW;
+
+    private void build() {
+        builtW = w;
         bg.setShader(new RadialGradient(w / 2f, h / 2f, Math.max(w, h) * 0.75f,
                 new int[]{0xFF140B2A, 0xFF07040F, 0xFF010103}, new float[]{0f, 0.5f, 1f}, Shader.TileMode.CLAMP));
         int[] loop = new int[RAINBOW.length + 1];
@@ -175,7 +262,6 @@ public class IntroView extends View {
         c.drawCircle(x, y, r, glow);
     }
 
-    /** Anamorphic lens flare: a long, thin horizontal glow. */
     private void streak(Canvas c, float x, float y, float length, float thick, int color, float alpha) {
         if (alpha <= 0) return;
         c.save();
@@ -191,17 +277,14 @@ public class IntroView extends View {
         sweep.setLocalMatrix(mx);
     }
 
-    // ---------------------------------------------------------------- draw
+    // ---------------------------------------------------------------- draw (render thread)
 
-    @Override
-    protected void onDraw(Canvas c) {
-        int w = getWidth(), h = getHeight();
-        if (w != lastW) build(w, h);
+    private void draw(Canvas c, float p, float t) {
+        if (w != builtW) build();
         float cx = w / 2f, cy = h / 2f;
         float half = (float) Math.hypot(cx, cy);
-        float t = p * DURATION / 1000f;
 
-        // ---- background with the iris opening ----
+        // background with the iris opening (transparent hole shows the home screen)
         float open = inOut(seg(p, REVEAL, 1f));
         float holeR = open * half * 1.05f;
         iris.reset();
@@ -222,28 +305,35 @@ public class IntroView extends View {
         c.save();
         c.scale(zoom, zoom, cx, cy);
 
-        // ---- 0. star dust ----
+        // 0. star dust: 4 batched calls
         float dust = seg(p, 0.02f, 0.25f) * fade;
         if (dust > 0) {
+            for (int g = 0; g < SG; g++) starN[g] = 0;
             for (int i = 0; i < S; i++) {
-                float tw = 0.5f + 0.5f * (float) Math.sin(t * 2.2f + sph[i]);
+                int g = i % SG;
                 float x = (sx[i] * w + t * 18 * d * sdep[i]) % w;
-                dot.setColor(Themes.withA(Color.WHITE, (int) (160 * dust * tw * sdep[i])));
-                c.drawCircle(x, sy[i] * h, sr[i] * d * 0.8f, dot);
+                starPts[g][starN[g]++] = x;
+                starPts[g][starN[g]++] = sy[i] * h;
+            }
+            pts.setStrokeWidth(1.6f * d);
+            for (int g = 0; g < SG; g++) {
+                float tw = 0.5f + 0.5f * (float) Math.sin(t * 2.2f + g * 1.57f);
+                pts.setColor(Themes.withA(Color.WHITE, (int) (130 * dust * tw)));
+                c.drawPoints(starPts[g], 0, starN[g], pts);
             }
         }
 
-        // ---- 1. color clouds ----
+        // 1. color clouds
         float clouds = seg(p, 0.1f, 0.38f) * fade;
         if (clouds > 0) {
             int[] cc = {0xFFFF3D9A, 0xFF2BD9FF, 0xFF7C4DFF};
             for (int i = 0; i < 3; i++) {
                 double a = t * 0.9 + i * 2.094;
-                softGlow(c, cx + (float) Math.cos(a) * half * 0.18f, cy + (float) Math.sin(a) * half * 0.13f, half * 0.45f, cc[i], 95 * clouds);
+                softGlow(c, cx + (float) Math.cos(a) * half * 0.18f, cy + (float) Math.sin(a) * half * 0.13f, half * 0.4f, cc[i], 95 * clouds);
             }
         }
 
-        // ---- 2. spark + lens flare ----
+        // 2. spark + lens flare
         float spark = out3(seg(p, 0f, 0.1f)) * (1f - seg(p, 0.16f, 0.3f));
         if (spark > 0) {
             softGlow(c, cx, cy, 60 * d * spark + 3 * d, Color.WHITE, 255 * spark);
@@ -251,7 +341,7 @@ public class IntroView extends View {
             streak(c, cx, cy, 420 * d * spark, 7 * d, 0xFF8FD8FF, 220 * spark);
         }
 
-        // ---- 3. ribbons ----
+        // 3. ribbons
         float burst = seg(p, 0.05f, 0.42f);
         float gather = seg(p, 0.3f, 0.5f);
         float ringR = (96 + 54 * out3(seg(p, 0.48f, 0.66f))) * d;
@@ -271,14 +361,13 @@ public class IntroView extends View {
             }
         }
 
-        // ---- 4. the ring, with fine counter-rotating hairlines ----
+        // 4. ring with counter-rotating hairlines
         float ringIn = out3(seg(p, 0.32f, 0.52f)) * fade;
         float flash = seg(p, 0.66f, 0.72f) * (1f - seg(p, 0.72f, 0.82f));
         if (ringIn > 0) {
             spinSweep(cx, cy, t * 140f);
             ring.setShader(sweep);
-            ring.setStrokeWidth(26 * d); ring.setAlpha((int) (56 * ringIn)); c.drawCircle(cx, cy, ringR, ring);
-            ring.setStrokeWidth(10 * d); ring.setAlpha((int) (115 * ringIn)); c.drawCircle(cx, cy, ringR, ring);
+            ring.setStrokeWidth(24 * d); ring.setAlpha((int) (56 * ringIn)); c.drawCircle(cx, cy, ringR, ring);
             ring.setStrokeWidth((3.2f + 3 * flash) * d); ring.setAlpha((int) (255 * ringIn)); c.drawCircle(cx, cy, ringR, ring);
             hair.setStrokeWidth(1.1f * d);
             hair.setColor(Themes.withA(Color.WHITE, (int) (90 * ringIn)));
@@ -293,32 +382,36 @@ public class IntroView extends View {
             }
         }
 
-        // ---- 5. comets spiral in, orbit, then blow outward ----
+        // 5. comets: batched by color and size (21 groups), head + halo + one echo
         float in = inOut(seg(p, 0.08f, 0.56f));
         float blast = out3(seg(p, 0.7f, 0.95f));
         float al = seg(p, 0.06f, 0.2f) * (1f - blast) * fade;
         if (al > 0) {
-            for (int i = 0; i < N; i++) {
-                float startR = pr[i] * half;
-                float orbitR = ringR + (i % 5 - 2) * 7 * d;
-                float r = startR + (orbitR - startR) * in + blast * half * (0.6f + pr[i] * 0.6f);
-                float spin = pv[i] * (0.4f + 0.6f * in);
-                float base = pa[i] + (1f - in) * 2.4f;
-                for (int k = 3; k >= 1; k--) {               // fading echoes behind the head
-                    float a = base + (t - 0.022f * k) * spin;
-                    dot.setColor(Themes.withA(pc[i], (int) (70 * al / k)));
-                    c.drawCircle(cx + (float) Math.cos(a) * r, cy + (float) Math.sin(a) * r, ps[i] * d * (1 - k * 0.18f), dot);
+            for (int pass = 0; pass < 3; pass++) {         // 0 = echo, 1 = halo, 2 = head
+                float tt = pass == 0 ? t - 0.05f : t;
+                for (int b = 0; b < bucketN.length; b++) bucketN[b] = 0;
+                for (int i = 0; i < N; i++) {
+                    float startR = pr[i] * half;
+                    float orbitR = ringR + (i % 5 - 2) * 7 * d;
+                    float r = startR + (orbitR - startR) * in + blast * half * (0.6f + pr[i] * 0.6f);
+                    float a = pa[i] + (1f - in) * 2.4f + tt * pv[i] * (0.4f + 0.6f * in);
+                    int b = pcol[i] * SIZES + psz[i];
+                    bucket[b][bucketN[b]++] = cx + (float) Math.cos(a) * r;
+                    bucket[b][bucketN[b]++] = cy + (float) Math.sin(a) * r;
                 }
-                float a = base + t * spin;
-                float x = cx + (float) Math.cos(a) * r, y = cy + (float) Math.sin(a) * r;
-                dot.setColor(Themes.withA(pc[i], (int) (55 * al)));
-                c.drawCircle(x, y, ps[i] * 3 * d, dot);
-                dot.setColor(Themes.withA(pc[i], (int) (255 * al)));
-                c.drawCircle(x, y, ps[i] * d, dot);
+                for (int b = 0; b < bucketN.length; b++) {
+                    if (bucketN[b] == 0) continue;
+                    float size = SIZE_DP[b % SIZES] * d;
+                    int col = RAINBOW[b / SIZES];
+                    if (pass == 0) { pts.setStrokeWidth(size * 1.4f); pts.setColor(Themes.withA(col, (int) (60 * al))); }
+                    else if (pass == 1) { pts.setStrokeWidth(size * 5f); pts.setColor(Themes.withA(col, (int) (45 * al))); }
+                    else { pts.setStrokeWidth(size * 2f); pts.setColor(Themes.withA(col, (int) (255 * al))); }
+                    c.drawPoints(bucket[b], 0, bucketN[b], pts);
+                }
             }
         }
 
-        // ---- 6. the word ----
+        // 6. the word
         float size = 64 * d;
         letter.setTextSize(size);
         letterAdd.setTextSize(size);
@@ -333,23 +426,22 @@ public class IntroView extends View {
             if (lp <= 0) continue;
             float s = 0.3f + 0.7f * spring(lp);
             float split = (1f - out3(lp)) * 18 * d;
-            String ch = String.valueOf(WORD.charAt(i));
             float x = startX + i * spacing;
             c.save();
             c.scale(s, s, x, baseY - size * 0.36f);
             int la = (int) (255 * Math.min(1f, lp * 2f) * fade);
             if (split > 0.5f) {
                 letterAdd.setColor(Themes.withA(0xFFFF2BD6, (int) (la * 0.85f)));
-                c.drawText(ch, x - split, baseY, letterAdd);
+                c.drawText(WORD, i, i + 1, x - split, baseY, letterAdd);
                 letterAdd.setColor(Themes.withA(0xFF2BF0FF, (int) (la * 0.85f)));
-                c.drawText(ch, x + split, baseY, letterAdd);
+                c.drawText(WORD, i, i + 1, x + split, baseY, letterAdd);
             }
             letter.setColor(Themes.withA(Color.WHITE, la));
-            c.drawText(ch, x, baseY, letter);
+            c.drawText(WORD, i, i + 1, x, baseY, letter);
             c.restore();
         }
 
-        // ---- 7. rainbow shimmer across the word ----
+        // 7. shimmer
         float shine = seg(p, 0.64f, 0.84f);
         if (shine > 0 && shine < 1) {
             float bandX = startX - spacing + shine * (spacing * (WORD.length() + 1));
@@ -358,10 +450,10 @@ public class IntroView extends View {
             textBand.setLocalMatrix(mx);
             shimmer.setShader(textBand);
             shimmer.setAlpha((int) (255 * fade));
-            for (int i = 0; i < WORD.length(); i++) c.drawText(String.valueOf(WORD.charAt(i)), startX + i * spacing, baseY, shimmer);
+            for (int i = 0; i < WORD.length(); i++) c.drawText(WORD, i, i + 1, startX + i * spacing, baseY, shimmer);
         }
 
-        // ---- 8. shockwave + flare ----
+        // 8. shockwave + flare
         float wave = out3(seg(p, 0.68f, 0.98f));
         if (wave > 0 && wave < 1) {
             spinSweep(cx, cy, -t * 200f);
@@ -369,7 +461,7 @@ public class IntroView extends View {
             ring.setStrokeWidth(12 * d * (1 - wave) + 1 * d);
             ring.setAlpha((int) (230 * (1 - wave)));
             c.drawCircle(cx, cy, ringR + wave * half * 1.2f, ring);
-            softGlow(c, cx, cy, half * (0.4f + wave * 0.6f), 0xFF6C63FF, 90 * (1 - wave));
+            softGlow(c, cx, cy, half * (0.35f + wave * 0.45f), 0xFF6C63FF, 80 * (1 - wave));
             streak(c, cx, cy, half * 1.4f * (0.4f + wave), 5 * d, 0xFFA8E6FF, 200 * (1 - wave));
         }
         c.restore();

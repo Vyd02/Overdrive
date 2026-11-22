@@ -1,6 +1,6 @@
 {
-  "versionCode": 19,
-  "versionName": "2.4.3",
-  "apk": "dist/Overdrive-19.apk",
-  "notes": "Fire TV's own click is silenced inside Sora, so only Sora's sounds play. Up from any tile reaches Open / Options / Pin. Lock button."
+  "versionCode": 20,
+  "versionName": "2.5.0",
+  "apk": "dist/Overdrive-20.apk",
+  "notes": "Smoothness: the intro now runs on its own dedicated drawing thread, the background rests while it plays, lighter effects throughout."
 }

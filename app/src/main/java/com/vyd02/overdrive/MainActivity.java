@@ -239,7 +239,7 @@ public class MainActivity extends Activity {
         Shade(Context c) { super(c); }
         @Override protected void onSizeChanged(int w, int hh, int ow, int oh) {
             v.setShader(new LinearGradient(0, 0, 0, hh, new int[]{Color.argb(90, 0, 0, 0), Color.argb(30, 0, 0, 0),
-                    Color.argb(170, 4, 5, 10), Color.argb(235, 4, 5, 10)}, new float[]{0f, 0.3f, 0.62f, 1f}, Shader.TileMode.CLAMP));
+                    Color.argb(215, 4, 5, 10), Color.argb(225, 4, 5, 10)}, new float[]{0f, 0.3f, 0.6f, 1f}, Shader.TileMode.CLAMP));
             h.setShader(new LinearGradient(0, 0, w * 0.6f, 0, new int[]{Color.argb(170, 4, 5, 10), 0}, null, Shader.TileMode.CLAMP));
         }
         @Override protected void onDraw(Canvas c) {
@@ -256,8 +256,8 @@ public class MainActivity extends Activity {
 
         backA = backdrop();
         backB = backdrop();
-        root.addView(backA, new FrameLayout.LayoutParams(-1, -1));
-        root.addView(backB, new FrameLayout.LayoutParams(-1, -1));
+        root.addView(backA, new FrameLayout.LayoutParams(-1, dp(340)));
+        root.addView(backB, new FrameLayout.LayoutParams(-1, dp(340)));
         root.addView(new Shade(this), new FrameLayout.LayoutParams(-1, -1));
 
         content = new LinearLayout(this);
@@ -744,7 +744,7 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(w), dp(h));
         lp.rightMargin = dp(20);
         strip.addView(t, lp);
-        if (firstBuild) {
+        if (firstBuild && idx < 12) {
             t.setAlpha(0f);
             t.setTranslationY(dp(26));
             long base = intro.isPlaying() ? 2550 : 80;
@@ -948,8 +948,9 @@ public class MainActivity extends Activity {
         float lx = t.getLeft() + (tw - lw) / 2f;
         moveLight(line, lx, lw / dp(100), row != litRow);
         moveLight(glow, lx - lw * 0.1f, lw * 1.2f / dp(100), row != litRow);
-        line.setBackground(Ui.solid(this, t.getAccent() | 0xFF000000, 2));
-        glow.setBackground(Ui.solid(this, Themes.withA(t.getAccent(), 80), 6));
+        // recolor in place (no new objects while moving)
+        if (line.getBackground() instanceof GradientDrawable) ((GradientDrawable) line.getBackground()).setColor(t.getAccent() | 0xFF000000);
+        if (glow.getBackground() instanceof GradientDrawable) ((GradientDrawable) glow.getBackground()).setColor(Themes.withA(t.getAccent(), 80));
 
         if (row != litRow) {
             if (litRow != null) {
@@ -1064,9 +1065,7 @@ public class MainActivity extends Activity {
         bd.setFilterBitmap(true);
         in.setImageDrawable(bd);
         in.setVisibility(View.VISIBLE);
-        in.setScaleX(1.06f);
-        in.setScaleY(1.06f);
-        in.animate().alpha(0.62f).scaleX(1f).scaleY(1f).setDuration(900).setInterpolator(Ui.EASE_OUT).start();
+        in.animate().alpha(0.62f).setDuration(600).setInterpolator(Ui.EASE_OUT).start();
     }
 
     // =====================================================================
@@ -1230,7 +1229,9 @@ public class MainActivity extends Activity {
     private void playIntro() {
         content.setAlpha(0f);
         sound.play(Sound.INTRO);
+        theme.setPaused(true);
         intro.play(currentAccent, () -> {
+            theme.setPaused(false);
             content.setScaleX(0.96f);
             content.setScaleY(0.96f);
             content.animate().withLayer().alpha(1f).scaleX(1f).scaleY(1f).setDuration(560).setInterpolator(Ui.EASE_OUT).start();
