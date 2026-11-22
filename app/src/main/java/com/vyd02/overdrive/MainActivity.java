@@ -97,6 +97,7 @@ public class MainActivity extends Activity {
         startClock();
         refreshWeather();
         ui.postDelayed(this::autoCheckUpdate, 4000);
+        ui.postDelayed(this::maybePromptGuard, 1800);
 
         IntentFilter f = new IntentFilter();
         f.addAction(Intent.ACTION_PACKAGE_ADDED);
@@ -646,6 +647,10 @@ public class MainActivity extends Activity {
     private void showMainMenu() {
         int hiddenCount = repo.hidden().size();
         List<Item> items = new ArrayList<>();
+        boolean guardOn = HomeGuardService.isEnabled(this)
+                && repo.prefs().getBoolean(HomeGuardService.KEY_GUARD_ON, true);
+        items.add(new Item("Back & Home guard", guardOn ? "On · Back out of apps lands here"
+                : "Off · Back can drop you on Amazon's home", this::showGuardPanel));
         items.add(new Item("Hidden apps", hiddenCount == 0 ? "None hidden" : hiddenCount + " hidden", this::showHiddenApps));
         items.add(new Item("Weather location", repo.prefs().getString(Weather.KEY_NAME, "Automatic"), this::showWeatherPanel));
         items.add(new Item(pendingRelease != null ? "Install update" : "Check for updates",
@@ -680,6 +685,40 @@ public class MainActivity extends Activity {
             }
         }));
         showPanel(a.label, isHidden ? "HIDDEN APP" : "APP OPTIONS", items, null);
+    }
+
+    private void showGuardPanel() {
+        boolean enabled = HomeGuardService.isEnabled(this);
+        boolean on = repo.prefs().getBoolean(HomeGuardService.KEY_GUARD_ON, true);
+        List<Item> items = new ArrayList<>();
+        if (!enabled) {
+            items.add(new Item("Open Accessibility settings", "Turn on \"Overdrive Back & Home guard\"", () -> {
+                repo.prefs().edit().putBoolean(HomeGuardService.KEY_GUARD_ON, true).apply();
+                try {
+                    startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+                } catch (Exception e) {
+                    openFireSettings();
+                }
+            }));
+            items.add(new Item("Later", null, () -> closePanel(true)));
+            showPanel("Back & Home guard",
+                    "When Back takes you out of an app, Fire TV drops you on Amazon's home. "
+                            + "This sends you right back here.\n\nSettings → Accessibility → Overdrive Back & Home guard → ON",
+                    items, null);
+        } else {
+            items.add(new Item(on ? "Turn off" : "Turn on", on ? "Let Amazon's home stay open" : "Always come back to Overdrive", () -> {
+                repo.prefs().edit().putBoolean(HomeGuardService.KEY_GUARD_ON, !on).apply();
+                closePanel(true);
+                showBanner(on ? "Guard off" : "Guard on");
+            }));
+            showPanel("Back & Home guard", on ? "Guard is on." : "Guard is off.", items, null);
+        }
+    }
+
+    private void maybePromptGuard() {
+        if (HomeGuardService.isEnabled(this) || repo.prefs().getBoolean("guard_prompted", false)) return;
+        repo.prefs().edit().putBoolean("guard_prompted", true).apply();
+        showGuardPanel();
     }
 
     private void showHiddenApps() {
@@ -980,18 +1019,25 @@ public class MainActivity extends Activity {
     // =====================================================================
 
     @Override
-    public boolean onKeyDown(int keyCode, KeyEvent event) {
-        if (keyCode == KeyEvent.KEYCODE_BACK) return true;
-        return super.onKeyDown(keyCode, event);
+    public boolean dispatchKeyEvent(KeyEvent event) {
+        // Back is caught here, before anything else can see it, so it can never leave Overdrive.
+        if (event.getKeyCode() == KeyEvent.KEYCODE_BACK) {
+            View f = getCurrentFocus();
+            if (f instanceof EditText) {
+                InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+                if (imm != null && imm.isActive(f) && event.getAction() == KeyEvent.ACTION_UP) hideKeyboard(f);
+            }
+            if (event.getAction() == KeyEvent.ACTION_UP && event.getRepeatCount() == 0 && !event.isCanceled()) {
+                if (overlay.getVisibility() == View.VISIBLE) closePanel(true);
+                else { scroll.smoothScrollTo(0, 0); focusFirstTile(); }
+            }
+            return true;
+        }
+        return super.dispatchKeyEvent(event);
     }
 
     @Override
     public boolean onKeyUp(int keyCode, KeyEvent event) {
-        if (keyCode == KeyEvent.KEYCODE_BACK) {
-            if (overlay.getVisibility() == View.VISIBLE) closePanel(true);
-            else { scroll.smoothScrollTo(0, 0); focusFirstTile(); }
-            return true;
-        }
         if (keyCode == KeyEvent.KEYCODE_MENU && overlay.getVisibility() != View.VISIBLE) {
             showMainMenu();
             return true;
@@ -1001,7 +1047,7 @@ public class MainActivity extends Activity {
 
     @Override
     public void onBackPressed() {
-        // Home screen: Back never leaves
+        // Home screen: Back never leaves (dispatchKeyEvent already handles it)
     }
 
     @SuppressWarnings("unused")
