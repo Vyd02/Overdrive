@@ -59,6 +59,26 @@ public class HomeGuardService extends AccessibilityService {
     @Override
     public void onInterrupt() { }
 
+    /**
+     * Fire OS switches the guard off whenever Sora is updated. If Sora was given the one-time
+     * permission over ADB (pm grant com.vyd02.overdrive android.permission.WRITE_SECURE_SETTINGS),
+     * it switches the guard back on by itself, after updates and on every start.
+     */
+    static boolean restore(Context c) {
+        if (isEnabled(c)) return true;
+        if (c.checkSelfPermission("android.permission.WRITE_SECURE_SETTINGS") != android.content.pm.PackageManager.PERMISSION_GRANTED) return false;
+        try {
+            String me = new ComponentName(c, HomeGuardService.class).flattenToString();
+            String list = Settings.Secure.getString(c.getContentResolver(), Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
+            String next = (list == null || list.trim().isEmpty()) ? me : list + ":" + me;
+            Settings.Secure.putString(c.getContentResolver(), Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES, next);
+            Settings.Secure.putInt(c.getContentResolver(), Settings.Secure.ACCESSIBILITY_ENABLED, 1);
+            return isEnabled(c);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     static boolean isEnabled(Context c) {
         String list = Settings.Secure.getString(c.getContentResolver(), Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
         if (list == null) return false;

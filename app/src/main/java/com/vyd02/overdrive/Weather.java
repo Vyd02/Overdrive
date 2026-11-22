@@ -88,7 +88,7 @@ final class Weather {
         if (c == 0) return day ? "☀️" : "🌙";
         if (c <= 2) return day ? "⛅" : "☁️";
         if (c == 3) return "☁️";
-        if (c == 45 || c == 48) return "🌫️";
+        if (c == 45 || c == 48) return "☁️"; // the TV's fog emoji looks like a blank box
         if (c >= 51 && c <= 67) return "🌧️";
         if (c >= 71 && c <= 77) return "❄️";
         if (c >= 80 && c <= 82) return "🌦️";

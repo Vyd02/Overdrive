@@ -28,6 +28,7 @@ import android.text.InputType;
 import android.text.TextPaint;
 import android.text.TextUtils;
 import android.view.Gravity;
+import android.view.Choreographer;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
@@ -73,6 +74,12 @@ public class MainActivity extends Activity {
     // views
     private FrameLayout root;
     private ThemeView theme;
+    private FrameLayout bgLayer;
+    private ImageView bgPhoto;
+    private View shadeView;
+    private String photoFor = null;            // which theme's picture is showing (null = none)
+    private int themeGen;                      // newest theme switch, so a slow picture load can't win over a newer one
+    private java.util.Set<String> photoThemes; // themes that ship a rendered picture
     private ImageView backA, backB;
     private boolean backAOn = true;
     private LinearLayout content;
@@ -104,6 +111,9 @@ public class MainActivity extends Activity {
     private final Map<String, TileView> tileByKey = new HashMap<>();
     private String lastSignature = "";
     private boolean firstBuild = true;
+    private boolean dbgNoContent;
+    private boolean rowsReady;
+    private long rowsReadyAt; // the home screen is built: the intro can start without hiccups
     private View focusBeforePanel, focusBeforeOverlay;
     private int panelFocusIndex;
     private Updater.Release pendingRelease;
@@ -166,7 +176,20 @@ public class MainActivity extends Activity {
         f.addDataScheme("package");
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(pkgReceiver, f, Context.RECEIVER_EXPORTED);
         else registerReceiver(pkgReceiver, f);
+        // test commands over ADB without disturbing the screen: am broadcast -a com.vyd02.overdrive.DBG --es c <cmd>
+        IntentFilter df = new IntentFilter("com.vyd02.overdrive.DBG");
+        if (Build.VERSION.SDK_INT >= 33) registerReceiver(dbgReceiver, df, Context.RECEIVER_EXPORTED);
+        else registerReceiver(dbgReceiver, df);
     }
+
+    private final Runnable resumeReload = () -> reloadApps(false);
+
+    private final BroadcastReceiver dbgReceiver = new BroadcastReceiver() {
+        @Override public void onReceive(Context c, Intent i) {
+            String cmd = i.getStringExtra("c");
+            if (cmd != null && Settings.Global.getInt(getContentResolver(), Settings.Global.ADB_ENABLED, 0) == 1) debugCommand(cmd);
+        }
+    };
 
     private final BroadcastReceiver pkgReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context c, Intent i) { reloadApps(false); }
@@ -177,6 +200,7 @@ public class MainActivity extends Activity {
         super.onDestroy();
         if (sound == null) return; // crash screen was shown, nothing else was set up
         try { unregisterReceiver(pkgReceiver); } catch (Exception ignored) { }
+        try { unregisterReceiver(dbgReceiver); } catch (Exception ignored) { }
         ui.removeCallbacksAndMessages(null);
         io.shutdownNow();
         sound.release();
@@ -184,23 +208,35 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onResume() {
+        HomeGuardService.restore(this);
         super.onResume();
         if (crashMode || content == null) return;
         lastInteraction = System.currentTimeMillis();
-        reloadApps(false);
+        updateKeepAwake();
+        // refresh the rows after the welcome-back animation, so rebuilding never lands mid-animation
+        ui.removeCallbacks(resumeReload);
+        ui.postDelayed(resumeReload, 700);
         if (launching) {
             // coming back from an app: fade the zoom layer away and glide the home screen in
             launching = false;
-            launchFade.animate().withLayer().alpha(0f).setDuration(320).withEndAction(() -> {
+            // the zoomed-up tile is hidden under the black fade: drop it now instead of drawing it every frame
+            for (int k = launchLayer.getChildCount() - 1; k >= 0; k--) {
+                if (launchLayer.getChildAt(k) != launchFade) launchLayer.removeViewAt(k);
+            }
+            launchFade.animate().alpha(0f).setDuration(320).withEndAction(() -> {
                 launchLayer.removeAllViews();
                 launchLayer.setVisibility(View.GONE);
             }).start();
         }
         if (!intro.isPlaying()) {
-            content.setAlpha(0f);
+            // first frame back: the background is redrawn (and the home screen warmed up invisibly);
+            // the home screen glides in from the next frame, so those two costs never share a frame
+            content.animate().cancel();
+            content.setAlpha(0.004f);
             content.setScaleX(1.04f);
             content.setScaleY(1.04f);
-            content.animate().withLayer().alpha(1f).scaleX(1f).scaleY(1f).setDuration(420).setInterpolator(Ui.EASE_OUT).start();
+            content.postOnAnimation(() -> content.postOnAnimation(() ->
+                    content.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(420).setInterpolator(Ui.EASE_OUT).start()));
         }
         ui.postDelayed(this::autoCheckUpdate, 2500);
         refreshLock();
@@ -210,6 +246,12 @@ public class MainActivity extends Activity {
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         if (crashMode || content == null) return;
+        String dbg = intent.getStringExtra("sora_dbg");
+        if (dbg != null) {
+            // test commands for tuning on the TV over ADB; ignored unless ADB debugging is switched on
+            if (Settings.Global.getInt(getContentResolver(), Settings.Global.ADB_ENABLED, 0) == 1) debugCommand(dbg);
+            return;
+        }
         if (overlay.getVisibility() == View.VISIBLE) closePanel(false);
         if (hub.isOpen()) closeSettings();
         if (search.isOpen()) closeSearch();
@@ -218,6 +260,136 @@ public class MainActivity extends Activity {
         if (intent.getBooleanExtra(EXTRA_INTRO, false) && repo.prefs().getBoolean(SettingsHub.K_INTRO, true)) playIntro();
         scroll.scrollTo(0, 0);
         focusFirstTile();
+    }
+
+    /**
+     * Switch theme. Scene themes show their 3D-rendered picture underneath at full HD, and the
+     * half-size light layer on top is blended in as light (adds, never darkens). Others draw everything.
+     */
+    private void applyTheme(String id) {
+        if (photoThemes == null) {
+            photoThemes = new java.util.HashSet<>();
+            try {
+                String[] list = getAssets().list("themes");
+                if (list != null) for (String f : list) if (f.endsWith(".jpg")) photoThemes.add(f.substring(0, f.length() - 4));
+            } catch (Exception ignored) { }
+        }
+        final int gen = ++themeGen;
+        if (!photoThemes.contains(id)) {
+            theme.setTheme(id, false);
+            showPhoto(null, null);
+            return;
+        }
+        if (id.equals(photoFor)) { theme.setTheme(id, true); return; }
+        io.execute(() -> {
+            Bitmap b = loadPhoto(id);
+            ui.post(() -> {
+                if (gen != themeGen) return; // a newer switch happened meanwhile
+                if (b == null) { theme.setTheme(id, false); showPhoto(null, null); return; }
+                theme.setTheme(id, true);
+                showPhoto(id, b);
+            });
+        });
+    }
+
+    private Bitmap loadPhoto(String id) {
+        try (java.io.InputStream in = getAssets().open("themes/" + id + ".jpg")) {
+            android.graphics.BitmapFactory.Options o = new android.graphics.BitmapFactory.Options();
+            o.inMutable = true;
+            Bitmap b = android.graphics.BitmapFactory.decodeStream(in, null, o);
+            if (b == null) return null;
+            // bake the home screen's shading into the picture once, instead of drawing it every frame
+            Shade sh = new Shade(this);
+            sh.layout(0, 0, b.getWidth(), b.getHeight());
+            sh.onSizeChanged(b.getWidth(), b.getHeight(), 0, 0);
+            sh.draw(new Canvas(b));
+            b.prepareToDraw();
+            return b;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static final Paint LIGHT_LAYER = new Paint();
+    static { LIGHT_LAYER.setXfermode(new android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.ADD)); }
+
+    private void showPhoto(String id, Bitmap b) {
+        photoFor = id;
+        if (b == null) {
+            bgPhoto.setImageDrawable(null);
+            bgPhoto.setVisibility(View.GONE);
+            shadeView.setVisibility(View.VISIBLE);
+            bgLayer.setLayerType(View.LAYER_TYPE_HARDWARE, null);
+        } else {
+            bgPhoto.setImageBitmap(b);
+            bgPhoto.setVisibility(View.VISIBLE);
+            shadeView.setVisibility(View.GONE);
+            bgLayer.setLayerType(View.LAYER_TYPE_HARDWARE, LIGHT_LAYER);
+        }
+    }
+
+    /** Test switches sent over ADB while tuning on the real TV. Visual-only, nothing private. */
+    private void debugCommand(String cmd) {
+        switch (cmd) {
+            case "theme_pause": theme.setPaused(true); break;
+            case "theme_resume": theme.setPaused(false); break;
+            case "theme_hide": theme.setPaused(true); theme.setVisibility(View.INVISIBLE); break;
+            case "theme_show": theme.setVisibility(View.VISIBLE); theme.setPaused(false); break;
+            case "backdrop_hide": backA.setVisibility(View.INVISIBLE); backB.setVisibility(View.INVISIBLE); break;
+            case "backdrop_show": backA.setVisibility(View.VISIBLE); backB.setVisibility(View.VISIBLE); break;
+            case "intro": playIntro(); break;
+            case "settings": openSettings(); break;
+            case "search": openSearch(); break;
+            case "saver": showSaver(); break;
+            case "weather": showWeatherPanel(); break;
+            case "guard": showGuardPanel(); break;
+            case "verbose": ThemeView.verbose = !ThemeView.verbose; break;
+            case "nocontent": dbgNoContent = !dbgNoContent; break;
+            case "spin": {
+                // redraw the whole window every frame for 3 seconds, to measure the cost of one full frame
+                final int[] n = {0};
+                Choreographer.getInstance().postFrameCallback(new Choreographer.FrameCallback() {
+                    @Override public void doFrame(long t) {
+                        root.invalidate();
+                        content.invalidate();
+                        if (++n[0] < 180) Choreographer.getInstance().postFrameCallback(this);
+                    }
+                });
+                break;
+            }
+            default:
+                if (cmd.startsWith("nav:")) {
+                    // play remote presses inside the app (U D L R O=ok B=back M=menu), spaced like a person
+                    String seq = cmd.substring(4);
+                    int gap = 420;
+                    for (int i = 0; i < seq.length(); i++) {
+                        final int code;
+                        switch (seq.charAt(i)) {
+                            case 'U': code = KeyEvent.KEYCODE_DPAD_UP; break;
+                            case 'D': code = KeyEvent.KEYCODE_DPAD_DOWN; break;
+                            case 'L': code = KeyEvent.KEYCODE_DPAD_LEFT; break;
+                            case 'R': code = KeyEvent.KEYCODE_DPAD_RIGHT; break;
+                            case 'O': code = KeyEvent.KEYCODE_DPAD_CENTER; break;
+                            case 'B': code = KeyEvent.KEYCODE_BACK; break;
+                            case 'M': code = KeyEvent.KEYCODE_MENU; break;
+                            case 'F': code = KeyEvent.KEYCODE_MEDIA_FAST_FORWARD; break;
+                            default: code = 0;
+                        }
+                        if (code == 0) continue;
+                        ui.postDelayed(() -> {
+                            long now = android.os.SystemClock.uptimeMillis();
+                            dispatchKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_DOWN, code, 0));
+                            dispatchKeyEvent(new KeyEvent(now, now + 60, KeyEvent.ACTION_UP, code, 0));
+                        }, (long) i * gap);
+                    }
+                }
+                else if (cmd.startsWith("theme:")) applyTheme(cmd.substring(6));
+                else if (cmd.startsWith("hide:")) root.getChildAt(Integer.parseInt(cmd.substring(5))).setVisibility(View.INVISIBLE);
+                else if (cmd.startsWith("show:")) root.getChildAt(Integer.parseInt(cmd.substring(5))).setVisibility(View.VISIBLE);
+                else if (cmd.startsWith("hidec:")) content.getChildAt(Integer.parseInt(cmd.substring(6))).setVisibility(View.INVISIBLE);
+                else if (cmd.startsWith("showc:")) content.getChildAt(Integer.parseInt(cmd.substring(6))).setVisibility(View.VISIBLE);
+        }
+        android.util.Log.i("SoraPerf", "dbg " + cmd);
     }
 
     // =====================================================================
@@ -263,16 +435,36 @@ public class MainActivity extends Activity {
     private void buildUi() {
         root = new FrameLayout(this);
 
-        theme = new ThemeView(this, repo.prefs().getString(SettingsHub.K_THEME, "nebula"));
-        root.addView(theme, new FrameLayout.LayoutParams(-1, -1));
-
+        theme = new ThemeView(this, "nebula");
+        // The whole background (animated theme, blurred app art, dark shading) is drawn at half
+        // the screen's size into one small layer, then scaled up once. It's all soft light, so it
+        // looks the same, and the TV's graphics chip does a quarter of the work every frame.
+        android.util.DisplayMetrics dm = getResources().getDisplayMetrics();
+        int sw = Math.max(dm.widthPixels, dm.heightPixels), sh = Math.min(dm.widthPixels, dm.heightPixels);
+        int k = ThemeView.DOWNSCALE;
+        // Scene themes have a 3D-rendered picture: shown full-HD underneath, with the shading baked in
+        bgPhoto = new ImageView(this);
+        bgPhoto.setScaleType(ImageView.ScaleType.FIT_XY);
+        bgPhoto.setVisibility(View.GONE);
+        root.addView(bgPhoto, new FrameLayout.LayoutParams(-1, -1));
+        bgLayer = new FrameLayout(this);
+        root.addView(bgLayer, new FrameLayout.LayoutParams(sw / k, sh / k));
+        bgLayer.setPivotX(0f);
+        bgLayer.setPivotY(0f);
+        bgLayer.setScaleX(k);
+        bgLayer.setScaleY(k);
+        bgLayer.setLayerType(View.LAYER_TYPE_HARDWARE, null);
+        bgLayer.addView(theme, new FrameLayout.LayoutParams(-1, -1));
         backA = backdrop();
         backB = backdrop();
-        root.addView(backA, new FrameLayout.LayoutParams(-1, dp(340)));
-        root.addView(backB, new FrameLayout.LayoutParams(-1, dp(340)));
-        root.addView(new Shade(this), new FrameLayout.LayoutParams(-1, -1));
+        bgLayer.addView(backA, new FrameLayout.LayoutParams(-1, dp(340) / k));
+        bgLayer.addView(backB, new FrameLayout.LayoutParams(-1, dp(340) / k));
+        shadeView = new Shade(this);
+        bgLayer.addView(shadeView, new FrameLayout.LayoutParams(-1, -1));
+        applyTheme(repo.prefs().getString(SettingsHub.K_THEME, "nebula"));
 
-        content = new LinearLayout(this);
+        // Fades draw each piece with the fade applied, instead of painting the whole screen offscreen first
+        content = new LinearLayout(this) { @Override public boolean hasOverlappingRendering() { return false; } };
         content.setOrientation(LinearLayout.VERTICAL);
         content.setPadding(dp(56), dp(26), 0, 0);
         content.setAlpha(0f);
@@ -309,6 +501,7 @@ public class MainActivity extends Activity {
             @Override public void launch(AppRepo.App a, TileView from) {
                 launchApp(from, repo.launchIntent(a.pkg), a.pkg);
                 search.hide(); // come back to the home screen, not the search box
+                theme.setPaused(false);
                 content.setDescendantFocusability(ViewGroup.FOCUS_AFTER_DESCENDANTS);
             }
             @Override public void play(int s) { sound.play(s); }
@@ -323,10 +516,10 @@ public class MainActivity extends Activity {
             @Override public void closeHub() { closeSettings(); }
             @Override public SharedPreferences prefs() { return repo.prefs(); }
             @Override public String themeId() { return theme.themeId(); }
-            @Override public void previewTheme(String id) { theme.setTheme(id); theme.setAccent(currentAccent); }
+            @Override public void previewTheme(String id) { applyTheme(id); theme.setAccent(currentAccent); }
             @Override public void commitTheme(String id) {
                 repo.prefs().edit().putString(SettingsHub.K_THEME, id).apply();
-                if (!id.equals(theme.themeId())) theme.setTheme(id);
+                if (!id.equals(theme.themeId())) applyTheme(id);
                 theme.select();
             }
             @Override public void homeChanged() { lastSignature = ""; reloadApps(true); }
@@ -445,9 +638,11 @@ public class MainActivity extends Activity {
         weatherTemp.setText("--°");
         weatherPlace = Ui.text(this, 10, Ui.FAINT, Ui.body(this, false));
         weatherPlace.setSingleLine(true);
+        weatherPlace.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        weatherPlace.setMaxWidth(dp(230));
         weatherPlace.setText("Weather");
-        wcol.addView(weatherTemp);
-        wcol.addView(weatherPlace);
+        wcol.addView(weatherTemp, new LinearLayout.LayoutParams(-2, -2));
+        wcol.addView(weatherPlace, new LinearLayout.LayoutParams(-2, -2)); // sized to its text, so it grows when the weather arrives
         bar.addView(wcol);
 
         View div = new View(this);
@@ -634,7 +829,10 @@ public class MainActivity extends Activity {
                 allApps = apps;
                 byPkg.clear();
                 for (AppRepo.App a : apps) byPkg.put(a.pkg, a);
+                long b0 = android.os.SystemClock.uptimeMillis();
                 buildRows(inputs, catOf);
+                android.util.Log.i("SoraPerf", "buildRows " + (android.os.SystemClock.uptimeMillis() - b0) + "ms");
+                if (!rowsReady) { rowsReady = true; rowsReadyAt = android.os.SystemClock.uptimeMillis(); }
             });
         });
     }
@@ -756,7 +954,7 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(w), dp(h));
         lp.rightMargin = dp(20);
         strip.addView(t, lp);
-        if (firstBuild && idx < 12) {
+        if (firstBuild && idx < 12 && !intro.isPlaying()) { // with the intro, the whole screen zooms in instead
             t.setAlpha(0f);
             t.setTranslationY(dp(26));
             long base = intro.isPlaying() ? 2550 : 80;
@@ -940,6 +1138,12 @@ public class MainActivity extends Activity {
 
     /** Focus landed on a tile: theme reacts, the row glides into place, the drive line slides over. */
     private void onTileFocused(TileView t) {
+        long f0 = System.nanoTime();
+        onTileFocused0(t);
+        if (ThemeView.verbose) android.util.Log.i("SoraPerf", "focus work " + (System.nanoTime() - f0) / 100_000 / 10f + "ms");
+    }
+
+    private void onTileFocused0(TileView t) {
         themeAt(t, t.getAccent());
         LinearLayout strip = (LinearLayout) t.getParent();
         FrameLayout holder = (FrameLayout) strip.getParent();
@@ -1058,7 +1262,7 @@ public class MainActivity extends Activity {
         }
 
         if (changed) {
-            pendingBlur = repo.prefs().getBoolean(SettingsHub.K_BACKDROP, true) ? blur : null;
+            pendingBlur = repo.prefs().getBoolean(SettingsHub.K_BACKDROP, false) && photoFor == null ? blur : null;
             ui.removeCallbacks(backdropRunner);
             ui.postDelayed(backdropRunner, 150);
         }
@@ -1068,6 +1272,7 @@ public class MainActivity extends Activity {
     private final Runnable backdropRunner = () -> crossfadeBackdrop(pendingBlur);
 
     private void crossfadeBackdrop(Bitmap blur) {
+        if (ThemeView.verbose) android.util.Log.i("SoraPerf", "backdrop crossfade");
         ImageView in = backAOn ? backB : backA;
         ImageView out = backAOn ? backA : backB;
         backAOn = !backAOn;
@@ -1116,7 +1321,7 @@ public class MainActivity extends Activity {
             launchFade.setAlpha(0f);
             launchFade.animate().alpha(1f).setStartDelay(160).setDuration(300).start();
         }
-        content.animate().withLayer().alpha(0f).scaleX(0.97f).scaleY(0.97f).setDuration(300)
+        content.animate().alpha(0f).scaleX(0.97f).scaleY(0.97f).setDuration(300)
                 .setInterpolator(new AccelerateInterpolator()).start();
         ui.postDelayed(() -> {
             try {
@@ -1126,7 +1331,7 @@ public class MainActivity extends Activity {
                 launching = false;
                 launchLayer.removeAllViews();
                 launchLayer.setVisibility(View.GONE);
-                content.animate().withLayer().alpha(1f).scaleX(1f).scaleY(1f).setDuration(200).start();
+                content.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(200).start();
                 showBanner("Can't open that app");
             }
         }, 440);
@@ -1153,7 +1358,7 @@ public class MainActivity extends Activity {
 
     private void blockHome(boolean block) {
         content.setDescendantFocusability(block ? ViewGroup.FOCUS_BLOCK_DESCENDANTS : ViewGroup.FOCUS_AFTER_DESCENDANTS);
-        content.animate().withLayer().alpha(block ? 0.0f : 1f).setDuration(240).start();
+        content.animate().alpha(block ? 0.0f : 1f).setDuration(240).start();
     }
 
     private void openSearch() {
@@ -1161,19 +1366,22 @@ public class MainActivity extends Activity {
         focusBeforeOverlay = getCurrentFocus();
         blockHome(true);
         search.show();
+        // the background is nearly hidden behind Search: hold it still so the keyboard gets the full frame budget
+        ui.postDelayed(() -> { if (search.isOpen()) theme.setPaused(true); }, 340);
     }
 
     private void closeSearch() {
         if (!search.isOpen()) return;
         sound.play(Sound.BACK);
         search.hide();
+        theme.setPaused(false);
         blockHome(false);
         restoreHomeFocus();
     }
 
     private void openSettings() {
         if (hub.isOpen()) return;
-        if (search.isOpen()) { search.hide(); }
+        if (search.isOpen()) { search.hide(); theme.setPaused(false); }
         else focusBeforeOverlay = getCurrentFocus();
         blockHome(true);
         hub.show();
@@ -1239,14 +1447,29 @@ public class MainActivity extends Activity {
     // =====================================================================
 
     private void playIntro() {
-        content.setAlpha(0f);
-        sound.play(Sound.INTRO);
+        // Warm-up: while the intro holds its first (solid) frame, the home screen is drawn underneath it
+        // so every picture, letter and effect is ready on the graphics chip before the animation starts.
+        // Then the reveal doesn't stutter on its first frames.
+        content.setAlpha(1f); // hidden behind the intro's solid first frame
         theme.setPaused(true);
-        intro.play(currentAccent, () -> {
-            theme.setPaused(false);
+        bgLayer.setVisibility(View.INVISIBLE); // fully covered by the intro: give the graphics chip to the intro
+        bgPhoto.setAlpha(0f);
+        intro.onDone = () -> {
+            // the background glows in once the intro is gone (drawing both at once is too much for this TV)
+            bgLayer.setAlpha(0f);
+            bgLayer.setVisibility(View.VISIBLE);
+            bgPhoto.animate().alpha(1f).setDuration(450).setInterpolator(Ui.EASE_OUT).start();
+            bgLayer.animate().alpha(1f).setDuration(450).setInterpolator(Ui.EASE_OUT)
+                    .withEndAction(() -> theme.setPaused(false)).start();
+            ui.postDelayed(() -> { bgLayer.setAlpha(1f); theme.setPaused(false); }, 600);
+        };
+        intro.play(currentAccent,
+                () -> sound.ready(Sound.INTRO) && rowsReady && android.os.SystemClock.uptimeMillis() - rowsReadyAt > 150,
+                () -> { content.setAlpha(0f); sound.play(Sound.INTRO); }, () -> {
             content.setScaleX(0.96f);
             content.setScaleY(0.96f);
-            content.animate().withLayer().alpha(1f).scaleX(1f).scaleY(1f).setDuration(560).setInterpolator(Ui.EASE_OUT).start();
+            if (dbgNoContent) { ui.postDelayed(() -> content.setAlpha(1f), 900); return; }
+            content.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(560).setInterpolator(Ui.EASE_OUT).start();
         });
     }
 
@@ -1303,8 +1526,9 @@ public class MainActivity extends Activity {
         saverDate = Ui.text(this, 17, Color.argb(220, 255, 255, 255), Ui.body(this, true));
         saverDate.setLetterSpacing(0.18f);
         saverWeather = Ui.text(this, 15, Ui.SUB, Ui.body(this, false));
-        saverBox.addView(saverTime);
-        saverBox.addView(saverDate);
+        // sized to their text, so "10:33" isn't cut off after the box was measured for "7:44"
+        saverBox.addView(saverTime, new LinearLayout.LayoutParams(-2, -2));
+        saverBox.addView(saverDate, new LinearLayout.LayoutParams(-2, -2));
         LinearLayout.LayoutParams wl = new LinearLayout.LayoutParams(-2, -2);
         wl.topMargin = dp(14);
         saverBox.addView(saverWeather, wl);
@@ -1320,16 +1544,31 @@ public class MainActivity extends Activity {
                     && System.currentTimeMillis() - lastInteraction > mins * 60_000L) {
                 showSaver();
             }
+            updateKeepAwake();
             ui.postDelayed(this, 15000);
         }
     };
+
+    // While Sora is on screen, Fire TV's own screensaver stays away: Sora's screensaver takes its place.
+    // After 2 hours without a button press, Sora lets go so the TV can still go to sleep on its own.
+    private static final long KEEP_AWAKE_MS = 2 * 60 * 60_000L;
+    private boolean keepingAwake;
+
+    private void updateKeepAwake() {
+        boolean want = repo.prefs().getInt(SettingsHub.K_SAVER, 3) > 0
+                && System.currentTimeMillis() - lastInteraction < KEEP_AWAKE_MS;
+        if (want == keepingAwake) return;
+        keepingAwake = want;
+        if (want) getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        else getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+    }
 
     private void showSaver() {
         updateSaverText();
         saver.setVisibility(View.VISIBLE);
         saver.setAlpha(0f);
         saver.animate().alpha(1f).setDuration(1200).start();
-        content.animate().withLayer().alpha(0f).setDuration(900).start();
+        content.animate().alpha(0f).setDuration(900).start();
         backA.animate().alpha(0f).setDuration(900).start();
         backB.animate().alpha(0f).setDuration(900).start();
         drift();
@@ -1350,13 +1589,14 @@ public class MainActivity extends Activity {
         saverTime.setText(fTime.format(now));
         saverDate.setText(fDate.format(now).toUpperCase(Locale.US));
         saverWeather.setText(lastWeatherLine);
+        saverBox.requestLayout();
     }
 
     private boolean hideSaver() {
         if (saver.getVisibility() != View.VISIBLE) return false;
         saverBox.animate().cancel();
         saver.animate().alpha(0f).setDuration(300).withEndAction(() -> saver.setVisibility(View.GONE)).start();
-        content.animate().withLayer().alpha(1f).setDuration(400).start();
+        content.animate().alpha(1f).setDuration(400).start();
         ImageView on = backAOn ? backA : backB;
         if (on.getVisibility() == View.VISIBLE) on.animate().alpha(0.62f).setDuration(400).start();
         return true;
@@ -1405,6 +1645,9 @@ public class MainActivity extends Activity {
                     weatherIcon.setText(r.icon);
                     weatherTemp.setText(r.temp + "°");
                     weatherPlace.setText((r.place.isEmpty() ? r.desc : r.place) + "  ·  " + r.hi + "° / " + r.lo + "°");
+                    // re-measure the weather column so the longer line isn't cut off ("Raleigh," bug)
+                    View wc = (View) weatherPlace.getParent();
+                    wc.post(() -> { wc.requestLayout(); wc.invalidate(); });
                     lastWeatherLine = r.icon + "  " + r.temp + "°  " + r.desc + (r.place.isEmpty() ? "" : "  ·  " + r.place);
                     weatherIcon.setScaleX(0.4f);
                     weatherIcon.setScaleY(0.4f);
@@ -1875,6 +2118,7 @@ public class MainActivity extends Activity {
         boolean down = event.getAction() == KeyEvent.ACTION_DOWN;
         boolean up = event.getAction() == KeyEvent.ACTION_UP;
         lastInteraction = System.currentTimeMillis();
+        if (!keepingAwake) updateKeepAwake();
 
         if (launching) return code != KeyEvent.KEYCODE_HOME;
         if (intro.isPlaying()) {

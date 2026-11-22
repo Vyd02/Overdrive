@@ -134,6 +134,7 @@ public class TileView extends View {
         boolean artSharp = art != null && (!preferCrisp || art.getWidth() >= r.width() * 0.8f);
         if (art != null && artSharp) {
             try { art.setHasMipMap(true); } catch (Exception ignored) { } // smoother when shown smaller
+            art.prepareToDraw(); // upload to the graphics chip now, in the background, not on the first visible frame
             BitmapShader sh = new BitmapShader(art, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP);
             float s = Math.max(r.width() / art.getWidth(), r.height() / art.getHeight());
             Matrix m = new Matrix();
@@ -143,6 +144,7 @@ public class TileView extends View {
             sh.setLocalMatrix(m);
             artShader = sh;
         }
+        if (icon != null && artShader == null) icon.prepareToDraw();
         bgShader = new LinearGradient(r.left, r.top, r.right, r.bottom,
                 darken(accent, 0.75f), darken(accent, 0.32f), Shader.TileMode.CLAMP);
 
@@ -223,27 +225,31 @@ public class TileView extends View {
             }
         }
 
+        // unfocused tiles are dimmed by darkening their own paint (no extra layer drawn on top)
+        int dimA = (int) (80 * (1f - focus));
         if (custom != null) {
             custom.paint(c, r, focus);
-        } else if (artShader != null) {
-            fill.setShader(artShader);
-            c.drawRoundRect(r, rad, rad, fill);
+            if (dimA > 0) { dim.setAlpha(dimA); c.drawRoundRect(r, rad, rad, dim); }
         } else {
-            fill.setShader(bgShader);
+            fill.setShader(artShader != null ? artShader : bgShader);
+            fill.setColorFilter(dimFilter(dimA));
             c.drawRoundRect(r, rad, rad, fill);
-            if (icon != null) c.drawBitmap(icon, null, iconDst, iconPaint);
-            c.drawText(shownLabel, 0, shownLabel.length(), labelX, labelY, text);
+            if (artShader == null) {
+                iconPaint.setColorFilter(dimFilter(dimA));
+                if (icon != null) c.drawBitmap(icon, null, iconDst, iconPaint);
+                iconPaint.setColorFilter(null);
+                text.setAlpha(255 - dimA * 2);
+                c.drawText(shownLabel, 0, shownLabel.length(), labelX, labelY, text);
+            }
         }
 
+        // gloss only covers the top half (it fades to nothing by then)
+        c.save();
+        c.clipRect(r.left, r.top, r.right, r.top + r.height() * 0.56f);
         c.drawRoundRect(r, rad, rad, gloss);
+        c.restore();
         edge.setColor(Color.argb((int) (40 * (1f - focus)), 255, 255, 255));
         if (focus < 0.99f) c.drawRoundRect(r, rad, rad, edge);
-
-        int dimA = (int) (80 * (1f - focus));
-        if (dimA > 0) {
-            dim.setAlpha(dimA);
-            c.drawRoundRect(r, rad, rad, dim);
-        }
 
         if (sheen > -1f && focus > 0.5f) {
             sheenMx.setTranslate(r.left + r.width() * sheen, r.top);
@@ -263,6 +269,18 @@ public class TileView extends View {
             Icons.draw(c, "pinned", bx, by + 0.5f * d, s, iconPaint, badgePath, badgeRect, d, 0f);
             iconPaint.setStyle(Paint.Style.FILL);
         }
+    }
+    // darkening filters, one per dim level, built once and shared by every tile
+    private static final android.graphics.ColorFilter[] DIM = new android.graphics.ColorFilter[81];
+    private static android.graphics.ColorFilter dimFilter(int dimA) {
+        if (dimA <= 0) return null;
+        int i = Math.min(80, dimA);
+        android.graphics.ColorFilter f = DIM[i];
+        if (f == null) {
+            int k = Math.round(255 * (1f - i / 255f));
+            f = DIM[i] = new android.graphics.LightingColorFilter(Color.rgb(k, k, k), 0);
+        }
+        return f;
     }
     private final android.graphics.Path badgePath = new android.graphics.Path();
     private final RectF badgeRect = new RectF();

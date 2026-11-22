@@ -19,9 +19,16 @@ final class Themes {
 
     private Themes() { }
 
-    static final String[] IDS = {"nebula", "synthwave", "warp", "aurora", "deepsea", "forge"};
-    static final String[] NAMES = {"Nebula", "Synthwave", "Hyperspace", "Aurora", "Deep Sea", "Ember Forge"};
+    static final String[] IDS = {"sakura", "neon", "library", "cathedral", "fireflies",
+            "nebula", "synthwave", "warp", "aurora", "deepsea", "forge"};
+    static final String[] NAMES = {"Sakura Night", "Neon Rain", "Victorian Library", "Gothic Cathedral", "Firefly Forest",
+            "Nebula", "Synthwave", "Hyperspace", "Aurora", "Deep Sea", "Ember Forge"};
     static final String[] BLURBS = {
+            "Cherry blossoms drifting past a moonlit city. Move to send them flying",
+            "A rainy neon city at night. The rain leans as you move; select for lightning",
+            "Candlelit bookshelves and dust floating in the moonlight. Select to stir the dust",
+            "Stained glass light pouring through a rose window. Select to make it blaze",
+            "Fireflies drifting through a misty forest. They follow wherever you go",
             "Glowing clouds that take on the color of whatever app you're on",
             "Neon grid racing toward a striped sunset. Steer it with the remote",
             "A starfield that jumps to light speed when you move",
@@ -36,6 +43,11 @@ final class Themes {
     }
 
     static Theme create(String id) {
+        if ("sakura".equals(id)) return new ThemesExtra.Sakura();
+        if ("neon".equals(id)) return new ThemesExtra.NeonRain();
+        if ("library".equals(id)) return new ThemesExtra.Library();
+        if ("cathedral".equals(id)) return new ThemesExtra.Cathedral();
+        if ("fireflies".equals(id)) return new ThemesExtra.Fireflies();
         if ("synthwave".equals(id)) return new Synthwave();
         if ("warp".equals(id)) return new Warp();
         if ("aurora".equals(id)) return new Aurora();
@@ -82,6 +94,8 @@ final class Themes {
 
     abstract static class Theme {
         int w, h;
+        /** The scene's rendered picture is shown underneath: draw only the moving light. */
+        boolean photo;
         final Random rnd = new Random(42);
         abstract String id();
         void init(int w, int h) { this.w = w; this.h = h; setup(); }
@@ -338,8 +352,10 @@ final class Themes {
 
     static final class Warp extends Theme {
         String id() { return "warp"; }
-        static final int N = 280;
+        static final int N = 280, BUCKETS = 6;
         final float[] x = new float[N], y = new float[N], z = new float[N];
+        final float[][] lines = new float[BUCKETS * 2][N * 4];
+        final int[] bn = new int[BUCKETS * 2];
         final Paint star = new Paint(Paint.ANTI_ALIAS_FLAG);
         { star.setXfermode(new android.graphics.PorterDuffXfermode(PorterDuff.Mode.ADD)); }
         final Paint flash = new Paint();
@@ -348,7 +364,7 @@ final class Themes {
 
         void setup() {
             for (int i = 0; i < N; i++) respawn(i, rnd.nextFloat());
-            star.setStrokeCap(Paint.Cap.ROUND);
+            star.setStrokeCap(Paint.Cap.BUTT); // flat ends draw on a fast path; at this size they look the same
             glow = new Glow(0.3f, 80);
             cx = w / 2f; cy = h / 2f;
         }
@@ -373,6 +389,8 @@ final class Themes {
 
             float f = w * 0.42f;
             int tint = lerpColor(Color.WHITE, in.accent, 0.25f);
+            // streaks are grouped by brightness and color: 12 batched draws instead of 280
+            for (int b = 0; b < BUCKETS * 2; b++) bn[b] = 0;
             for (int i = 0; i < N; i++) {
                 float zPrev = z[i] + speed * 0.06f + 0.004f;
                 z[i] -= dt * speed;
@@ -381,9 +399,18 @@ final class Themes {
                 if (sx < -50 || sx > w + 50 || sy < -50 || sy > h + 50) { respawn(i, 1f); continue; }
                 float px = cx + x[i] / zPrev * f, py = cy + y[i] / zPrev * f;
                 float near = 1f - z[i];
+                int b = Math.min(BUCKETS - 1, (int) (near * BUCKETS)) + (i % 3 == 0 ? BUCKETS : 0);
+                float[] L = lines[b];
+                int k = bn[b];
+                L[k] = px; L[k + 1] = py; L[k + 2] = sx; L[k + 3] = sy;
+                bn[b] = k + 4;
+            }
+            for (int b = 0; b < BUCKETS * 2; b++) {
+                if (bn[b] == 0) continue;
+                float near = ((b % BUCKETS) + 0.5f) / BUCKETS;
                 star.setStrokeWidth(0.8f + near * 3.2f);
-                star.setColor(withA(i % 3 == 0 ? tint : Color.WHITE, (int) (60 + 195 * near)));
-                c.drawLine(px, py, sx, sy, star);
+                star.setColor(withA(b >= BUCKETS ? tint : Color.WHITE, (int) (60 + 195 * near)));
+                c.drawLines(lines[b], 0, bn[b], star);
             }
             if (in.pulse > 0.6f) {
                 flash.setColor(withA(Color.WHITE, (int) ((in.pulse - 0.6f) * 160)));

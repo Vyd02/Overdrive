@@ -32,6 +32,8 @@ final class Sound {
         for (int i = 0; i < res.length; i++) ids[i] = pool.load(c, res[i], 1);
     }
 
+    boolean ready(int which) { return ready[which]; }
+
     boolean on() { return prefs.getBoolean(KEY_SOUNDS, true); }
 
     void play(int which) {

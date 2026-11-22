@@ -18,6 +18,9 @@ import java.util.Locale;
 /** Remote-friendly search: an on-screen keyboard on the left, live results on the right. */
 public class SearchOverlay extends FrameLayout {
 
+    /** Fades apply to each piece directly: no full-screen offscreen pass while animating. */
+    @Override public boolean hasOverlappingRendering() { return false; }
+
     interface Host {
         List<AppRepo.App> apps();
         void launch(AppRepo.App a, TileView from);
@@ -165,13 +168,13 @@ public class SearchOverlay extends FrameLayout {
         setVisibility(VISIBLE);
         setAlpha(0f);
         setTranslationY(dp(24));
-        animate().withLayer().alpha(1f).translationY(0).setDuration(320).setInterpolator(Ui.EASE_OUT).start();
+        animate().alpha(1f).translationY(0).setDuration(320).setInterpolator(Ui.EASE_OUT).start();
         firstKey.post(firstKey::requestFocus);
         blink();
     }
 
     void hide() {
-        animate().withLayer().alpha(0f).translationY(dp(16)).setDuration(200)
+        animate().alpha(0f).translationY(dp(16)).setDuration(200)
                 .withEndAction(() -> setVisibility(GONE)).start();
     }
 

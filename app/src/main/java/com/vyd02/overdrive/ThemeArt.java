@@ -13,6 +13,11 @@ final class ThemeArt {
 
     static int accent(String id) {
         switch (id) {
+            case "sakura": return 0xFFFF8FB8;
+            case "neon": return 0xFF2BF0FF;
+            case "library": return 0xFFFFB45A;
+            case "cathedral": return 0xFF8A6CFF;
+            case "fireflies": return 0xFFC8FF5A;
             case "synthwave": return 0xFFFF3D9A;
             case "warp": return 0xFF9AB8FF;
             case "aurora": return 0xFF3DFFB0;
@@ -25,6 +30,11 @@ final class ThemeArt {
     static void bg(Paint p, String id, RectF r) {
         int[] c;
         switch (id) {
+            case "sakura": c = new int[]{0xFF1A1450, 0xFF6E3A7E, 0xFFF0A0B0}; break;
+            case "neon": c = new int[]{0xFF05060F, 0xFF1A1440, 0xFF0A0B18}; break;
+            case "library": c = new int[]{0xFF1C0F08, 0xFF2E1A0E, 0xFF120804}; break;
+            case "cathedral": c = new int[]{0xFF0B0B14, 0xFF1A1830, 0xFF08080C}; break;
+            case "fireflies": c = new int[]{0xFF030812, 0xFF0F2A32, 0xFF040B10}; break;
             case "synthwave": c = new int[]{0xFF1A0638, 0xFF6A1B6B, 0xFFFF6A3D}; break;
             case "warp": c = new int[]{0xFF02030A, 0xFF0A0F2A, 0xFF02030A}; break;
             case "aurora": c = new int[]{0xFF020617, 0xFF06122B, 0xFF0B2A3A}; break;
@@ -51,6 +61,75 @@ final class ThemeArt {
                 q.setColor(0xCCFF2BD6);
                 for (int i = -5; i <= 5; i++) c.drawLine(r.centerX() + i * 3 * d, hz, r.centerX() + i * w * 0.18f, r.bottom - d * 14, q);
                 for (int k = 1; k < 4; k++) { float y = hz + (r.bottom - d * 14 - hz) * (k * k) / 9f; c.drawLine(r.left, y, r.right, y, q); }
+                break;
+            }
+            case "sakura": {
+                q.setColor(0xFFFFF4EA);
+                c.drawCircle(r.left + w * 0.7f, r.top + h * 0.32f, h * 0.17f, q);
+                q.setColor(0xFF1A0F2E);
+                for (int i = 0; i < 9; i++) c.drawRect(r.left + i * w / 9f, r.bottom - h * (0.18f + (i * 37 % 20) / 100f), r.left + (i + 1) * w / 9f - d, r.bottom, q);
+                q.setColor(0xFFFFB7CC);
+                for (int i = 0; i < 14; i++) c.drawOval(r.left + w * ((i * 29 % 100) / 100f), r.top + h * ((i * 43 % 70) / 100f),
+                        r.left + w * ((i * 29 % 100) / 100f) + d * 6, r.top + h * ((i * 43 % 70) / 100f) + d * 3.5f, q);
+                break;
+            }
+            case "neon": {
+                q.setColor(0xFF0C0F24);
+                for (int i = 0; i < 7; i++) c.drawRect(r.left + i * w / 7f, r.top + h * (0.25f + (i * 31 % 30) / 100f), r.left + (i + 1) * w / 7f - d, r.bottom, q);
+                int[] cols = {0xFFFF2BD6, 0xFF2BF0FF, 0xFFFFB02B};
+                for (int i = 0; i < 3; i++) {
+                    q.setColor(cols[i]);
+                    float x = r.left + w * (0.18f + i * 0.3f);
+                    c.drawRect(x, r.top + h * 0.3f, x + d * 5, r.top + h * 0.6f, q);
+                }
+                q.setColor(0x70CFE4FF);
+                q.setStrokeWidth(d * 0.8f);
+                for (int i = 0; i < 16; i++) { float x = r.left + w * ((i * 23 % 100) / 100f), y = r.top + h * ((i * 41 % 80) / 100f);
+                    c.drawLine(x, y, x - d * 2, y + d * 8, q); }
+                break;
+            }
+            case "library": {
+                int[] sp = {0xFF6B1E1E, 0xFF1F3B2B, 0xFF5A3A1A, 0xFF1A2846, 0xFF7A5A2A};
+                for (int row = 0; row < 3; row++) {
+                    float y = r.top + h * (0.3f + row * 0.25f);
+                    for (int i = 0; i < 18; i++) {
+                        if (i > 6 && i < 11) continue;
+                        q.setColor(sp[(i + row) % sp.length]);
+                        c.drawRect(r.left + i * w / 18f, y - h * 0.18f, r.left + (i + 1) * w / 18f - d * 0.6f, y, q);
+                    }
+                }
+                q.setColor(0xFF22345C);
+                c.drawRoundRect(r.left + w * 0.4f, r.top + h * 0.1f, r.left + w * 0.6f, r.top + h * 0.75f, d * 8, d * 8, q);
+                q.setColor(0x60FFC870);
+                c.drawCircle(r.left + w * 0.66f, r.top + h * 0.72f, h * 0.15f, q);
+                break;
+            }
+            case "cathedral": {
+                float cx = r.centerX(), cy = r.top + h * 0.38f, R = h * 0.26f;
+                int[] g = {0xFF2448C8, 0xFFC8183C, 0xFFF0B22A, 0xFF7038C8};
+                for (int s2 = 0; s2 < 12; s2++) { q.setColor(g[s2 % 4]); c.drawArc(cx - R, cy - R, cx + R, cy + R, s2 * 30, 30, true, q); }
+                q.setColor(0xFFFFD25A);
+                c.drawCircle(cx, cy, R * 0.25f, q);
+                q.setColor(0xFF2A2838);
+                c.drawRect(r.left + w * 0.06f, r.top, r.left + w * 0.16f, r.bottom, q);
+                c.drawRect(r.right - w * 0.16f, r.top, r.right - w * 0.06f, r.bottom, q);
+                break;
+            }
+            case "fireflies": {
+                q.setColor(0xFF0A1B22);
+                for (int i = 0; i < 8; i++) {
+                    float x = r.left + (i + 0.5f) * w / 8f, top = r.top + h * (0.25f + (i * 37 % 25) / 100f);
+                    android.graphics.Path p = new android.graphics.Path();
+                    p.moveTo(x, top); p.lineTo(x + w * 0.07f, r.bottom); p.lineTo(x - w * 0.07f, r.bottom); p.close();
+                    c.drawPath(p, q);
+                }
+                for (int i = 0; i < 12; i++) {
+                    float x = r.left + w * ((i * 31 % 100) / 100f), y = r.top + h * (0.3f + (i * 47 % 50) / 100f);
+                    q.setColor(0x60D8FF6A);
+                    c.drawCircle(x, y, d * 4, q);
+                    q.setColor(0xFFF4FFC8);
+                    c.drawCircle(x, y, d * 1.2f, q);
+                }
                 break;
             }
             case "warp":

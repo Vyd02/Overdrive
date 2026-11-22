@@ -52,6 +52,9 @@ import java.util.Locale;
  */
 public class SettingsHub extends FrameLayout {
 
+    /** Fades apply to each piece directly: no full-screen offscreen pass while animating. */
+    @Override public boolean hasOverlappingRendering() { return false; }
+
     interface Host {
         void play(int sound);
         void tileFocused(View v, int accent);
@@ -67,7 +70,7 @@ public class SettingsHub extends FrameLayout {
     }
 
     static final String K_THEME = "theme", K_INTRO = "intro_on", K_SAVER = "saver_minutes",
-            K_INPUTS = "show_inputs", K_QUICK = "show_quick", K_BACKDROP = "backdrop_on";
+            K_INPUTS = "show_inputs", K_QUICK = "show_quick", K_BACKDROP = "backdrop_v2";
 
     private static final String[] CATS = {"Appearance", "Sound", "Home screen", "Power-up", "Weather", "Privacy", "Updates", "Fire TV", "About"};
     private static final String[] CAT_ICONS = {"palette", "sound", "home", "power", "cloud", "eye", "download", "tv", "info"};
@@ -108,7 +111,7 @@ public class SettingsHub extends FrameLayout {
 
         LinearLayout left = new LinearLayout(c);
         left.setOrientation(LinearLayout.VERTICAL);
-        left.setPadding(dp(48), dp(38), dp(14), dp(20));
+        left.setPadding(dp(48), dp(36), dp(14), dp(16));
         noClip(left);
         cols.addView(left, new LinearLayout.LayoutParams(dp(290), -1));
         TextView title = Ui.text(c, 32, Ui.TEXT, Ui.display(c, 700));
@@ -120,7 +123,7 @@ public class SettingsHub extends FrameLayout {
         left.addView(deviceLine);
         catList = new LinearLayout(c);
         catList.setOrientation(LinearLayout.VERTICAL);
-        catList.setPadding(0, dp(18), 0, 0);
+        catList.setPadding(0, dp(14), 0, 0);
         noClip(catList);
         left.addView(catList);
         for (int i = 0; i < CATS.length; i++) catList.addView(catRow(i));
@@ -185,8 +188,8 @@ public class SettingsHub extends FrameLayout {
         });
         r.setOnClickListener(v -> focusPane());
         paint.run();
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, dp(46));
-        lp.bottomMargin = dp(4);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, dp(40)); // all nine fit on screen, About included
+        lp.bottomMargin = dp(3);
         r.setLayoutParams(lp);
         catRows.add(r);
         return r;
@@ -232,7 +235,7 @@ public class SettingsHub extends FrameLayout {
         }
         pane.setAlpha(0f);
         pane.setTranslationX(dp(18));
-        pane.animate().withLayer().alpha(1f).translationX(0).setDuration(260).setInterpolator(Ui.EASE_OUT).start();
+        pane.animate().alpha(1f).translationX(0).setDuration(260).setInterpolator(Ui.EASE_OUT).start();
     }
 
     // ==================================================================== panes
@@ -252,7 +255,7 @@ public class SettingsHub extends FrameLayout {
         for (int i = 0; i < Themes.IDS.length; i++) cards.addView(themeCard(i), cardLp());
         pane.addView(hs);
         pane.addView(section("HOME SCREEN LOOK"));
-        pane.addView(toggle("App artwork backdrop", "The focused app's art fills the screen behind it", K_BACKDROP, true, host::homeChanged));
+        pane.addView(toggle("App artwork backdrop", "Blurred art of the focused app behind the home screen (off: clean theme)", K_BACKDROP, false, host::homeChanged));
         pane.addView(toggle("Startup intro", "Plays when the TV turns on", K_INTRO, true, null));
         pane.addView(action("Watch the intro", null, () -> host.sub("intro")));
     }
@@ -511,11 +514,19 @@ public class SettingsHub extends FrameLayout {
             float h = getHeight(), w = getWidth();
             r.set(0, 0, w, h);
             int off = rowFocus ? Color.argb(60, 10, 13, 24) : Color.argb(70, 255, 255, 255);
-            p.setColor(Themes.lerpColor(off, Ui.ACCENT, Math.max(0f, Math.min(1f, pos))));
+            p.setColor(lerpArgb(off, Ui.ACCENT, Math.max(0f, Math.min(1f, pos)))); // keeps the see-through "off" track
             c.drawRoundRect(r, h / 2, h / 2, p);
             p.setColor(Color.WHITE);
             c.drawCircle(h / 2 + (w - h) * pos, h / 2, h / 2 - dp(3), p);
         }
+    }
+
+    static int lerpArgb(int a, int b, float f) {
+        return Color.argb(
+                (int) (Color.alpha(a) + (Color.alpha(b) - Color.alpha(a)) * f),
+                (int) (Color.red(a) + (Color.red(b) - Color.red(a)) * f),
+                (int) (Color.green(a) + (Color.green(b) - Color.green(a)) * f),
+                (int) (Color.blue(a) + (Color.blue(b) - Color.blue(a)) * f));
     }
 
     private class ValueText extends LinearLayout implements Recolorable {
@@ -679,7 +690,7 @@ public class SettingsHub extends FrameLayout {
         setVisibility(VISIBLE);
         setAlpha(0f);
         setTranslationX(dp(30));
-        animate().withLayer().alpha(1f).translationX(0).setDuration(320).setInterpolator(Ui.EASE_OUT).start();
+        animate().alpha(1f).translationX(0).setDuration(320).setInterpolator(Ui.EASE_OUT).start();
         loadInfo();
         activeCat = -1;
         View first = catRows.get(0);
@@ -688,7 +699,7 @@ public class SettingsHub extends FrameLayout {
 
     void hide() {
         if (activeCat == 0) revertThemePreview();
-        animate().withLayer().alpha(0f).translationX(dp(20)).setDuration(200)
+        animate().alpha(0f).translationX(dp(20)).setDuration(200)
                 .withEndAction(() -> setVisibility(GONE)).start();
     }
 

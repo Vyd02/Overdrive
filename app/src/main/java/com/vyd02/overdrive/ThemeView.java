@@ -2,61 +2,56 @@ package com.vyd02.overdrive;
 
 import android.content.Context;
 import android.graphics.Canvas;
-import android.graphics.PixelFormat;
-import android.os.Build;
-import android.os.Handler;
-import android.os.HandlerThread;
-import android.os.Looper;
-import android.os.Process;
 import android.view.Choreographer;
-import android.view.SurfaceHolder;
-import android.view.SurfaceView;
+import android.view.View;
 
 /**
- * Animated background, drawn on its own thread and locked to the TV's refresh signal (vsync)
- * the same way the system UI draws. Every frame uses the display's own timestamp, so motion
- * is perfectly even. If the TV ever struggles, it lowers the background's resolution instead
- * of dropping frames, so it stays at full frame rate.
+ * Animated background, drawn as part of the home screen's own frame.
+ *
+ * Measured on the Insignia Fire TV: when the background had its own surface, its frames
+ * queued on the same graphics pipeline as the menus, so every move waited behind a
+ * background frame (and the TV had to blend two full-screen layers each frame).
+ * Drawing it in the same pass as the menus means one frame per refresh, in perfect step.
  */
-public class ThemeView extends SurfaceView implements SurfaceHolder.Callback, Choreographer.FrameCallback {
+public class ThemeView extends View implements Choreographer.FrameCallback {
 
-    static final int RW = 1280, RH = 720;                       // the themes' drawing coordinates
-    // 1280x720 is the sweet spot: soft glows look identical to 1080p at less than half the work
-    private static final int[][] TIERS = {{1280, 720}, {1088, 612}, {960, 540}};
+    static final int RW = 1280, RH = 720; // the themes' drawing coordinates
+    static final int DOWNSCALE = 2;       // the view is laid out at 1/2 size and scaled up
 
     private volatile Themes.Theme theme;
     private final Themes.Input input = new Themes.Input();
-    private final Handler main = new Handler(Looper.getMainLooper());
+    private final Choreographer choreo = Choreographer.getInstance();
 
-    private HandlerThread thread;
-    private Handler render;
-    private Choreographer choreo;
-    private volatile boolean alive;
-    private volatile int surfW = TIERS[0][0];
-    private int tier = 0;
+    private boolean running, paused;
+    private long startNs, lastNs, frameNs;
+    private float dt;
 
-    // frame timing (render thread only)
-    private long startNs, lastNs;
-    private long vsyncNs = 16_666_667L;
-    private int windowFrames, windowJank, calmFrames;
-    private int sinceUpgrade = Integer.MAX_VALUE / 2;
-    private boolean noMoreUpgrades;
+    // smoothness log for tuning over ADB
+    private int perfFrames, perfLate;
+    static boolean verbose;
+    private long perfStartNs;
 
     public ThemeView(Context c, String themeId) {
         super(c);
-        getHolder().setFormat(PixelFormat.RGBA_8888);
-        getHolder().setFixedSize(TIERS[0][0], TIERS[0][1]);
-        getHolder().addCallback(this);
+        setWillNotDraw(false);
         setTheme(themeId);
     }
 
-    public void setTheme(String id) {
+    public void setTheme(String id) { setTheme(id, false); }
+
+    /** @param photo the theme's rendered picture is shown underneath, so only its moving light is drawn here */
+    public void setTheme(String id, boolean photo) {
         Themes.Theme t = Themes.create(id);
+        t.photo = photo;
         t.init(RW, RH);
         theme = t;
+        invalidate();
     }
 
     public String themeId() { return theme.id(); }
+
+    @Override public boolean hasOverlappingRendering() { return false; }
+    @Override public boolean isOpaque() { return theme == null || !theme.photo; }
 
     // ---- interaction, called from the UI thread ----
 
@@ -69,109 +64,84 @@ public class ThemeView extends SurfaceView implements SurfaceHolder.Callback, Ch
 
     public void select() { input.selectsA.incrementAndGet(); }
 
-    private volatile boolean paused;
-    /** Stop drawing (e.g. while the intro covers the screen) so the TV's graphics chip has all its power for that. */
-    public void setPaused(boolean p) { paused = p; if (!p) lastNs = 0; }
+    /** Stop animating (intro, apps on top, screensaver). The last frame stays on screen. */
+    public void setPaused(boolean p) {
+        if (paused == p) return;
+        paused = p;
+        if (!p) { lastNs = 0; schedule(); }
+    }
 
     public void setAccent(int color) { input.targetAccent = color; }
 
-    // ---- surface lifecycle ----
+    // ---- frame loop ----
 
     @Override
-    public void surfaceCreated(SurfaceHolder h) {
-        if (getDisplay() != null) {
-            float hz = getDisplay().getRefreshRate();
-            if (hz > 20f) vsyncNs = (long) (1_000_000_000L / hz);
-        }
-        alive = true;
-        thread = new HandlerThread("overdrive-theme", Process.THREAD_PRIORITY_DEFAULT);
-        thread.start();
-        render = new Handler(thread.getLooper());
-        render.post(() -> {
-            choreo = Choreographer.getInstance(); // bound to this thread's looper
-            lastNs = 0;
-            choreo.postFrameCallback(this);
-        });
+    protected void onAttachedToWindow() {
+        super.onAttachedToWindow();
+        running = true;
+        lastNs = 0;
+        schedule();
     }
 
     @Override
-    public void surfaceChanged(SurfaceHolder h, int format, int w, int hh) { surfW = w; }
-
-    @Override
-    public void surfaceDestroyed(SurfaceHolder h) {
-        alive = false;
-        if (render != null) {
-            render.post(() -> { if (choreo != null) choreo.removeFrameCallback(this); });
-        }
-        if (thread != null) {
-            thread.quitSafely();
-            try { thread.join(500); } catch (InterruptedException ignored) { }
-            thread = null;
-        }
+    protected void onDetachedFromWindow() {
+        super.onDetachedFromWindow();
+        running = false;
+        choreo.removeFrameCallback(this);
+        scheduled = false;
     }
 
-    // ---- one frame per vsync ----
+    @Override
+    protected void onWindowVisibilityChanged(int v) {
+        super.onWindowVisibilityChanged(v);
+        if (v == VISIBLE) { lastNs = 0; schedule(); }
+        else { choreo.removeFrameCallback(this); scheduled = false; }
+    }
+
+    private boolean scheduled;
+    private void schedule() {
+        if (scheduled || !running || paused) return;
+        scheduled = true;
+        choreo.postFrameCallback(this);
+    }
 
     @Override
-    public void doFrame(long frameNs) {
-        if (!alive) return;
-        choreo.postFrameCallback(this); // book the next vsync first
-        if (paused) return;
-
-        if (lastNs == 0) { lastNs = frameNs; startNs = frameNs; }
-        long interval = frameNs - lastNs;
-        lastNs = frameNs;
-        float dt = Math.min(0.05f, Math.max(0f, interval / 1_000_000_000f));
-        trackSmoothness(interval);
+    public void doFrame(long ns) {
+        scheduled = false;
+        if (!running || paused || getWindowVisibility() != VISIBLE) return;
+        if (lastNs == 0) { lastNs = ns; if (startNs == 0) startNs = ns; }
+        long interval = ns - lastNs;
+        lastNs = ns;
+        frameNs = ns;
+        dt = Math.min(0.05f, Math.max(0f, interval / 1_000_000_000f));
         input.step(dt);
-
-        SurfaceHolder h = getHolder();
-        Canvas c = null;
-        try {
-            if (!h.getSurface().isValid()) return;
-            c = Build.VERSION.SDK_INT >= 26 ? h.lockHardwareCanvas() : h.lockCanvas();
-            if (c == null) return;
-            float scale = (float) surfW / RW;
-            c.save();
-            c.scale(scale, scale);
-            Themes.Theme t = theme;
-            if (t != null) t.draw(c, (frameNs - startNs) / 1_000_000_000f, dt, input);
-            c.restore();
-        } catch (Exception ignored) {
-            // surface can be swapped out while the TV changes screens
-        } finally {
-            if (c != null) {
-                try { h.unlockCanvasAndPost(c); } catch (Exception ignored) { }
-            }
-        }
+        trackPerf(ns, interval);
+        invalidate();
+        schedule();
     }
 
-    /** If more than ~8% of frames arrive late, step the background down a size; recover after a long calm. */
-    private void trackSmoothness(long interval) {
+    @Override
+    protected void onDraw(Canvas c) {
+        Themes.Theme t = theme;
+        if (t == null) return;
+        if (startNs == 0) startNs = System.nanoTime();
+        long now = frameNs != 0 ? frameNs : System.nanoTime();
+        float scale = (float) getWidth() / RW;
+        int save = c.save();
+        c.scale(scale, (float) getHeight() / RH);
+        t.draw(c, (now - startNs) / 1_000_000_000f, paused ? 0f : dt, input);
+        c.restoreToCount(save);
+    }
+
+    private void trackPerf(long ns, long interval) {
         if (interval <= 0) return;
-        boolean late = interval > vsyncNs * 3 / 2;
-        windowFrames++;
-        if (late) windowJank++;
-        calmFrames = late ? 0 : calmFrames + 1;
-        sinceUpgrade++;
-        if (windowFrames >= 180) {
-            if (windowJank > 14 && tier < TIERS.length - 1) {
-                if (sinceUpgrade < 60 * 15) noMoreUpgrades = true; // sharper size didn't hold: stay put
-                setTier(tier + 1);
-            }
-            windowFrames = 0;
-            windowJank = 0;
+        perfFrames++;
+        if (interval > 25_000_000L) { perfLate++; if (verbose) android.util.Log.i("SoraPerf", "late frame " + interval / 1_000_000 + "ms"); }
+        if (perfStartNs == 0) perfStartNs = ns;
+        if (perfFrames >= 300) {
+            android.util.Log.i("SoraPerf", "theme " + theme.id() + " frames=" + perfFrames + " late=" + perfLate
+                    + " fps=" + (perfFrames * 1e9f / Math.max(1, ns - perfStartNs)));
+            perfFrames = 0; perfLate = 0; perfStartNs = ns;
         }
-        if (!noMoreUpgrades && calmFrames > 60 * 30 && tier > 0) { // 30 calm seconds: try the sharper size again
-            calmFrames = 0;
-            sinceUpgrade = 0;
-            setTier(tier - 1);
-        }
-    }
-
-    private void setTier(int t) {
-        tier = t;
-        final int w = TIERS[t][0], hh = TIERS[t][1];
-        main.post(() -> getHolder().setFixedSize(w, hh));
     }
 }

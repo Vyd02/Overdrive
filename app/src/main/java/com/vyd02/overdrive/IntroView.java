@@ -8,7 +8,6 @@ import android.graphics.LinearGradient;
 import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.Path;
-import android.graphics.PixelFormat;
 import android.graphics.PorterDuff;
 import android.graphics.PorterDuffXfermode;
 import android.graphics.RadialGradient;
@@ -16,14 +15,9 @@ import android.graphics.RectF;
 import android.graphics.Shader;
 import android.graphics.SweepGradient;
 import android.graphics.Typeface;
-import android.os.Build;
 import android.os.Handler;
-import android.os.HandlerThread;
 import android.os.Looper;
-import android.os.Process;
 import android.view.Choreographer;
-import android.view.SurfaceHolder;
-import android.view.SurfaceView;
 import android.view.View;
 
 import java.util.Random;
@@ -31,30 +25,30 @@ import java.util.Random;
 /**
  * Sora's power-up intro, "chromatic bloom".
  *
- * Drawn on its OWN thread, locked to the TV's refresh (like a game), on a transparent surface
- * that sits above the home screen. Nothing the app does on the main thread (loading the app list,
- * building rows) can make it stutter. Particles and stars are batched into a few draw calls.
+ * Drawn in the home screen's own frame, one frame per TV refresh. (A separate surface was
+ * measured to queue behind the menus on this TV's graphics pipeline and cost extra memory.)
+ * Particles and stars are batched into a few draw calls.
  */
-public class IntroView extends SurfaceView implements SurfaceHolder.Callback, Choreographer.FrameCallback {
+public class IntroView extends android.widget.FrameLayout implements Choreographer.FrameCallback {
 
     private static final String WORD = "SORA";
     private static final long DURATION_NS = 3_200_000_000L;
     private static final float REVEAL = 0.8f;
     private static final int[] RAINBOW = {0xFFFF3D71, 0xFFFF9F1C, 0xFFFFE14D, 0xFF3DFFB0, 0xFF2BD9FF, 0xFF6C63FF, 0xFFD65CFF};
 
-    private float d;                 // dp in SURFACE pixels (the surface may be smaller than the screen)
+    private float d;
     private final float density;
     private final Handler main = new Handler(Looper.getMainLooper());
-    private HandlerThread thread;
-    private Choreographer choreo;
-    private volatile boolean alive, playing;
+    private final Choreographer choreo = Choreographer.getInstance();
+    private boolean alive, playing;
+    private float drawP, drawT;
     private volatile long skipToNs = -1;
     private long startNs;
     private Runnable onReveal;
     private boolean revealed;
     private int w, h;
 
-    // paints (render thread only)
+    // paints
     private final PorterDuffXfermode add = new PorterDuffXfermode(PorterDuff.Mode.ADD);
     private final Paint bg = new Paint(Paint.DITHER_FLAG);
     private final Paint ring = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -93,10 +87,14 @@ public class IntroView extends SurfaceView implements SurfaceHolder.Callback, Ch
         density = c.getResources().getDisplayMetrics().density;
         d = density;
         brand = Ui.brand(c, true);
-        setZOrderOnTop(true);                                   // above the home screen...
-        getHolder().setFormat(PixelFormat.TRANSLUCENT);         // ...and see-through where we don't draw
-        getHolder().addCallback(this);
         setVisibility(GONE);
+        addView(fx, new android.widget.FrameLayout.LayoutParams(1, 1));
+        fx.setPivotX(0f);
+        fx.setPivotY(0f);
+        fx.setScaleX(FX_DOWNSCALE);
+        fx.setScaleY(FX_DOWNSCALE);
+        fx.setLayerType(LAYER_TYPE_HARDWARE, null);
+        addView(word, new android.widget.FrameLayout.LayoutParams(-1, -1));
 
         ring.setStyle(Paint.Style.STROKE);
         ring.setXfermode(add);
@@ -125,36 +123,81 @@ public class IntroView extends SurfaceView implements SurfaceHolder.Callback, Ch
         for (int g = 0; g < SG; g++) starPts[g] = new float[S * 2];
     }
 
-    // ---------------------------------------------------------------- control (main thread)
+    // ---------------------------------------------------------------- control
+
+    @Override public boolean hasOverlappingRendering() { return false; }
+
+    /** Effects at half size (soft light looks the same, a quarter of the work); the word at full sharpness. */
+    static final int FX_DOWNSCALE = 2;
+    private final View fx = new View(getContext()) {
+        @Override public boolean hasOverlappingRendering() { return false; }
+        @Override protected void onDraw(Canvas c) {
+            if (!playing || getWidth() == 0) return;
+            w = getWidth(); h = getHeight(); d = density / FX_DOWNSCALE;
+            drawIntro(c, drawP, drawT, false);
+        }
+    };
+    private final View word = new View(getContext()) {
+        @Override public boolean hasOverlappingRendering() { return false; }
+        @Override protected void onDraw(Canvas c) {
+            if (!playing || getWidth() == 0) return;
+            w = getWidth(); h = getHeight(); d = density;
+            drawIntro(c, drawP, drawT, true);
+        }
+    };
 
     @Override
     protected void onSizeChanged(int vw, int vh, int ow, int oh) {
         super.onSizeChanged(vw, vh, ow, oh);
-        // Never draw more than 1080p: on a 4K screen the TV's scaler stretches it for free.
-        if (vw > 1920) {
-            float k = 1920f / vw;
-            getHolder().setFixedSize(1920, Math.round(vh * k));
+        android.widget.FrameLayout.LayoutParams lp = (android.widget.FrameLayout.LayoutParams) fx.getLayoutParams();
+        if (lp.width != vw / FX_DOWNSCALE || lp.height != vh / FX_DOWNSCALE) {
+            lp.width = vw / FX_DOWNSCALE;
+            lp.height = vh / FX_DOWNSCALE;
+            post(fx::requestLayout);
         }
     }
 
-    public void play(int accentColor, Runnable reveal) {
+    private Runnable onStart;
+    private java.util.function.BooleanSupplier startWhen;
+    private long playNs;
+
+    /**
+     * @param startWhen the intro holds its first (dark) frame until this is true (the sound is loaded),
+     *                  at least 250 ms so the app's start-up work is out of the way, and at most 1.2 s
+     * @param start     runs the moment the animation clock starts (play the sound here, in sync)
+     */
+    public void play(int accentColor, java.util.function.BooleanSupplier startWhen, Runnable start, Runnable reveal) {
+        this.startWhen = startWhen;
+        onStart = start;
+        playNs = 0;
         onReveal = reveal;
         revealed = false;
         skipToNs = -1;
         playing = true;
-        setVisibility(VISIBLE); // creating the surface starts the render thread
+        alive = true;
+        startNs = 0;
+        lastFrameNs = 0;
+        lateFrames = 0;
+        revealedPosted = false;
+        setVisibility(VISIBLE);
+        choreo.removeFrameCallback(this);
+        choreo.postFrameCallback(this);
     }
 
     public void skip() { skipToNs = (long) (DURATION_NS * REVEAL); }
 
     public boolean isPlaying() { return playing; }
 
-    private void finishOnMain() {
-        main.post(() -> {
-            if (!revealed) fireReveal();
-            playing = false;
-            setVisibility(GONE);
-        });
+    Runnable onDone;
+
+    private void finish() {
+        android.util.Log.i("SoraPerf", "intro done, late frames " + lateFrames);
+        alive = false;
+        choreo.removeFrameCallback(this);
+        if (!revealed) fireReveal();
+        playing = false;
+        setVisibility(GONE);
+        if (onDone != null) { Runnable r = onDone; onDone = null; r.run(); }
     }
 
     private void fireReveal() {
@@ -162,80 +205,55 @@ public class IntroView extends SurfaceView implements SurfaceHolder.Callback, Ch
         if (onReveal != null) { Runnable r = onReveal; onReveal = null; r.run(); }
     }
 
-    // ---------------------------------------------------------------- surface + thread
-
     @Override
-    public void surfaceCreated(SurfaceHolder holder) {
-        alive = true;
-        revealedPosted = false;
-        thread = new HandlerThread("sora-intro", Process.THREAD_PRIORITY_DEFAULT);
-        thread.start();
-        new Handler(thread.getLooper()).post(() -> {
-            choreo = Choreographer.getInstance();
-            startNs = 0;
-            choreo.postFrameCallback(this);
-        });
+    protected void onDetachedFromWindow() {
+        super.onDetachedFromWindow();
+        choreo.removeFrameCallback(this);
     }
 
-    @Override
-    public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
-        int vw = getWidth() > 0 ? getWidth() : width;
-        d = density * width / (float) vw;   // keep every size the same on screen at any surface size
-        w = width;
-        h = height;
-    }
-
-    @Override
-    public void surfaceDestroyed(SurfaceHolder holder) {
-        alive = false;
-        if (thread != null) {
-            thread.quitSafely();
-            try { thread.join(400); } catch (InterruptedException ignored) { }
-            thread = null;
-        }
-    }
+    // ---------------------------------------------------------------- one frame per refresh
 
     @Override
     public void doFrame(long frameNs) {
         if (!alive) return;
-        if (startNs == 0) startNs = frameNs;
+        if (startNs == 0) {
+            if (playNs == 0) playNs = frameNs;
+            long waited = frameNs - playNs;
+            boolean go = waited >= 1_200_000_000L || (waited >= 250_000_000L && (startWhen == null || startWhen.getAsBoolean()));
+            if (!go) {
+                drawP = 0f; drawT = 0f;
+                fx.invalidate();
+                choreo.postFrameCallback(this);
+                return;
+            }
+            startNs = frameNs;
+            lastFrameNs = 0;
+            if (onStart != null) { Runnable r = onStart; onStart = null; r.run(); }
+        }
         long skip = skipToNs;
         if (skip >= 0) {
             if (frameNs - startNs < skip) startNs = frameNs - skip; // only ever jump forward
             skipToNs = -1;
         }
         long el = frameNs - startNs;
+        if (lastFrameNs != 0) {
+            long gap = frameNs - lastFrameNs;
+            if (gap > 25_000_000L) { lateFrames++; android.util.Log.i("SoraPerf", "intro late frame " + gap / 1_000_000 + "ms at " + el / 1_000_000 + "ms"); }
+        }
+        lastFrameNs = frameNs;
         float p = Math.min(1f, el / (float) DURATION_NS);
-        if (p >= REVEAL && !revealedPosted) { revealedPosted = true; main.post(() -> { if (!revealed) fireReveal(); }); }
-        if (p >= 1f) {
-            clearSurface();
-            revealedPosted = false;
-            finishOnMain();
-            return;
-        }
+        if (p >= REVEAL && !revealedPosted) { revealedPosted = true; if (!revealed) fireReveal(); }
+        if (p >= 1f) { finish(); return; }
+        drawP = p;
+        drawT = el / 1e9f;
+        fx.invalidate();
+        word.invalidate();
         choreo.postFrameCallback(this);
-        SurfaceHolder holder = getHolder();
-        Canvas c = null;
-        try {
-            if (!holder.getSurface().isValid() || w == 0) return;
-            c = Build.VERSION.SDK_INT >= 26 ? holder.lockHardwareCanvas() : holder.lockCanvas();
-            if (c == null) return;
-            c.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR);
-            draw(c, p, el / 1e9f);
-        } catch (Exception ignored) {
-        } finally {
-            if (c != null) try { holder.unlockCanvasAndPost(c); } catch (Exception ignored) { }
-        }
     }
     private boolean revealedPosted;
+    private long lastFrameNs;
+    private int lateFrames;
 
-    private void clearSurface() {
-        SurfaceHolder holder = getHolder();
-        try {
-            Canvas c = Build.VERSION.SDK_INT >= 26 ? holder.lockHardwareCanvas() : holder.lockCanvas();
-            if (c != null) { c.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR); holder.unlockCanvasAndPost(c); }
-        } catch (Exception ignored) { }
-    }
 
     // ---------------------------------------------------------------- helpers
 
@@ -291,12 +309,22 @@ public class IntroView extends SurfaceView implements SurfaceHolder.Callback, Ch
         sweep.setLocalMatrix(mx);
     }
 
-    // ---------------------------------------------------------------- draw (render thread)
+    // ---------------------------------------------------------------- draw
 
-    private void draw(Canvas c, float p, float t) {
-        if (w != builtW) build();
+    private void drawIntro(Canvas c, float p, float t, boolean wordPass) {
         float cx = w / 2f, cy = h / 2f;
         float half = (float) Math.hypot(cx, cy);
+        if (wordPass) {
+            float fade = 1f - inOut(seg(p, REVEAL, 1f));
+            if (fade <= 0.01f) return;
+            float zoom = 1f + (1f - fade) * 0.45f;
+            c.save();
+            c.scale(zoom, zoom, cx, cy);
+            drawWord(c, p, cx, cy, fade);
+            c.restore();
+            return;
+        }
+        if (w != builtW) build();
 
         // background with the iris opening (transparent hole shows the home screen)
         float open = inOut(seg(p, REVEAL, 1f));
@@ -425,6 +453,26 @@ public class IntroView extends SurfaceView implements SurfaceHolder.Callback, Ch
             }
         }
 
+        // 6. glow behind the word (the word itself is drawn sharp by the word layer)
+        float size = 64 * d;
+        float settled = seg(p, 0.66f, 0.74f) * fade;
+        if (settled > 0) softGlow(c, cx, cy, 170 * d, 0xFF9A7CFF, 70 * settled);
+
+        // 8. shockwave + flare
+        float wave = out3(seg(p, 0.68f, 0.98f));
+        if (wave > 0 && wave < 1) {
+            spinSweep(cx, cy, -t * 200f);
+            ring.setShader(sweep);
+            ring.setStrokeWidth(12 * d * (1 - wave) + 1 * d);
+            ring.setAlpha((int) (230 * (1 - wave)));
+            c.drawCircle(cx, cy, ringR + wave * half * 1.2f, ring);
+            softGlow(c, cx, cy, half * (0.35f + wave * 0.45f), 0xFF6C63FF, 80 * (1 - wave));
+            streak(c, cx, cy, half * 1.4f * (0.4f + wave), 5 * d, 0xFFA8E6FF, 200 * (1 - wave));
+        }
+        c.restore();
+    }
+
+    private void drawWord(Canvas c, float p, float cx, float cy, float fade) {
         // 6. the word
         float size = 64 * d;
         letter.setTextSize(size);
@@ -433,8 +481,6 @@ public class IntroView extends SurfaceView implements SurfaceHolder.Callback, Ch
         float spacing = size * 0.86f;
         float startX = cx - spacing * (WORD.length() - 1) / 2f;
         float baseY = cy + size * 0.36f;
-        float settled = seg(p, 0.66f, 0.74f) * fade;
-        if (settled > 0) softGlow(c, cx, cy, 170 * d, 0xFF9A7CFF, 70 * settled);
         for (int i = 0; i < WORD.length(); i++) {
             float lp = seg(p, 0.46f + i * 0.045f, 0.62f + i * 0.045f);
             if (lp <= 0) continue;
@@ -467,17 +513,5 @@ public class IntroView extends SurfaceView implements SurfaceHolder.Callback, Ch
             for (int i = 0; i < WORD.length(); i++) c.drawText(WORD, i, i + 1, startX + i * spacing, baseY, shimmer);
         }
 
-        // 8. shockwave + flare
-        float wave = out3(seg(p, 0.68f, 0.98f));
-        if (wave > 0 && wave < 1) {
-            spinSweep(cx, cy, -t * 200f);
-            ring.setShader(sweep);
-            ring.setStrokeWidth(12 * d * (1 - wave) + 1 * d);
-            ring.setAlpha((int) (230 * (1 - wave)));
-            c.drawCircle(cx, cy, ringR + wave * half * 1.2f, ring);
-            softGlow(c, cx, cy, half * (0.35f + wave * 0.45f), 0xFF6C63FF, 80 * (1 - wave));
-            streak(c, cx, cy, half * 1.4f * (0.4f + wave), 5 * d, 0xFFA8E6FF, 200 * (1 - wave));
-        }
-        c.restore();
     }
 }

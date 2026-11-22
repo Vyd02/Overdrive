@@ -1,6 +1,6 @@
 {
-  "versionCode": 22,
-  "versionName": "2.5.2",
-  "apk": "dist/Overdrive-22.apk",
-  "notes": "Crash fix attempt plus a crash screen that shows the exact error if anything goes wrong."
+  "versionCode": 23,
+  "versionName": "2.6.0",
+  "apk": "dist/Overdrive-23.apk",
+  "notes": "Smooth 60 FPS everywhere, crash fix, 5 new 3D-rendered scene themes (Sakura Night, Neon Rain, Victorian Library, Gothic Cathedral, Firefly Forest), no more Amazon screensaver over Sora, cleaner backgrounds."
 }
