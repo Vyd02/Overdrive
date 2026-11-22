@@ -1,0 +1,49 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.vyd02.overdrive'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'com.vyd02.overdrive'
+        minSdk 25
+        targetSdk 34
+        // Bump BOTH of these for every release. The GitHub release tag must be v<versionName>.
+        versionCode 1
+        versionName '1.0.0'
+        buildConfigField 'String', 'GITHUB_REPO', '"Vyd02/Overdrive"'
+    }
+
+    signingConfigs {
+        release {
+            // Keep overdrive.jks safe: every update must be signed with the same key.
+            storeFile file('../overdrive.jks')
+            storePassword System.getenv('OVERDRIVE_KS_PASS') ?: 'overdrive'
+            keyAlias 'overdrive'
+            keyPassword System.getenv('OVERDRIVE_KS_PASS') ?: 'overdrive'
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.release
+        }
+    }
+
+    lint {
+        checkReleaseBuilds false
+        abortOnError false
+    }
+
+    buildFeatures {
+        buildConfig true
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
