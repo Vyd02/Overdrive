@@ -1,6 +1,6 @@
 {
-  "versionCode": 17,
-  "versionName": "2.4.1",
-  "apk": "dist/Overdrive-17.apk",
-  "notes": "Up from any tile now goes to Open / Options / Pin. Lock button to stay in Sora."
+  "versionCode": 18,
+  "versionName": "2.4.2",
+  "apk": "dist/Overdrive-18.apk",
+  "notes": "Up from any tile reaches Open / Options / Pin. Lock button. Updates now show up within about a minute."
 }

@@ -33,7 +33,15 @@ final class Updater {
 
     /** Reads version.json from the repo. Returns the newer build, or null when already up to date. */
     static Release check() throws Exception {
-        JSONObject j = new JSONObject(Net.get(RAW + "version.json?t=" + System.currentTimeMillis()));
+        JSONObject j;
+        try {
+            // GitHub's API reflects a new release within about a minute
+            j = new JSONObject(Net.get("https://api.github.com/repos/" + BuildConfig.GITHUB_REPO + "/contents/version.json?ref=main",
+                    "application/vnd.github.raw"));
+        } catch (Exception e) {
+            // fallback: the plain file server (can lag up to 5 minutes behind)
+            j = new JSONObject(Net.get(RAW + "version.json?t=" + System.currentTimeMillis()));
+        }
         if (j.optInt("versionCode", 0) <= BuildConfig.VERSION_CODE) return null;
         Release r = new Release();
         r.version = j.optString("versionName", "new");

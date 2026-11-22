@@ -8,12 +8,16 @@ import java.net.URL;
 final class Net {
     private Net() { }
 
-    static String get(String url) throws Exception {
+    static String get(String url) throws Exception { return get(url, "application/json"); }
+
+    static String get(String url, String accept) throws Exception {
         HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
+        c.setUseCaches(false);
         c.setConnectTimeout(10000);
         c.setReadTimeout(15000);
         c.setRequestProperty("User-Agent", "Overdrive-Launcher");
-        c.setRequestProperty("Accept", "application/json");
+        c.setRequestProperty("Accept", accept);
+        c.setRequestProperty("Cache-Control", "no-cache");
         try {
             int code = c.getResponseCode();
             if (code < 200 || code >= 300) throw new Exception("HTTP " + code);
