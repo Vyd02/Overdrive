@@ -237,7 +237,17 @@ public class TileView extends View {
     /** Renders a drawable at (up to) the requested size. Real bitmaps are kept as-is, no resampling. */
     static Bitmap toBitmap(Drawable dr, int w, int h) {
         if (dr instanceof BitmapDrawable && ((BitmapDrawable) dr).getBitmap() != null) {
-            return ((BitmapDrawable) dr).getBitmap();
+            Bitmap source = ((BitmapDrawable) dr).getBitmap();
+            int sw = source.getWidth(), sh = source.getHeight();
+            if (sw <= w && sh <= h) return source;
+            float scale = Math.min((float) w / sw, (float) h / sh);
+            int tw = Math.max(1, Math.round(sw * scale));
+            int th = Math.max(1, Math.round(sh * scale));
+            try {
+                return Bitmap.createScaledBitmap(source, tw, th, true);
+            } catch (OutOfMemoryError oom) {
+                return source;
+            }
         }
         int iw = dr.getIntrinsicWidth(), ih = dr.getIntrinsicHeight();
         float aspect = (iw > 0 && ih > 0) ? (float) iw / ih : (float) w / h;

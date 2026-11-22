@@ -201,7 +201,8 @@ public class BackgroundView extends FrameLayout {
                 r[i] = (minR + rnd.nextFloat() * (maxR - minR)) * d;
             }
             p.setColor(Color.WHITE);
-            // no layer: the dots are recorded once and the GPU just replays them while sliding
+            // Static dot geometry is cached once; animations only translate/fade the GPU layer.
+            setLayerType(View.LAYER_TYPE_HARDWARE, null);
         }
         @Override protected void onDraw(Canvas c) {
             int w = getWidth();

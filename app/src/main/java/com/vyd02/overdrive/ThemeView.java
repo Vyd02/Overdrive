@@ -76,43 +76,84 @@ public class ThemeView extends SurfaceView implements SurfaceHolder.Callback {
     }
 
     private void loop() {
-        long last = SystemClock.uptimeMillis();
-        long start = last;
-        SurfaceHolder h = getHolder();
-        float avg = 16f;          // running average frame time
-        boolean steady30 = false;
-        int frames = 0; // if the TV can't hold 60, lock to an even 30 instead of stuttering between them
+        final SurfaceHolder holder = getHolder();
+        final long frame60 = 16_666_667L;
+        final long frame30 = 33_333_333L;
+        long nextFrame = System.nanoTime();
+        final long animationStart = nextFrame;
+        long lastFrame = nextFrame;
+        long avgRenderNs = 4_000_000L;
+        int samples = 0;
+        int slowSamples = 0;
+        int fastSamples = 0;
+        boolean limited30 = false;
         final float scale = (float) SW / RW;
+
         while (alive) {
-            if (steady30) {
-                long wait = 33 - (SystemClock.uptimeMillis() - last);
-                if (wait > 0) SystemClock.sleep(wait);
-            }
-            long now = SystemClock.uptimeMillis();
-            frames++;
-            if (frames > 120) { // ignore warm-up frames
-                avg = avg * 0.95f + Math.min(100, now - last) * 0.05f;
-                if (!steady30 && avg > 21f) steady30 = true;
-            }
-            float dt = Math.min(0.05f, (now - last) / 1000f);
-            last = now;
-            input.step(dt);
-            Canvas c = null;
-            try {
-                c = Build.VERSION.SDK_INT >= 26 ? h.lockHardwareCanvas() : h.lockCanvas();
-                if (c == null) { SystemClock.sleep(16); continue; }
-                c.save();
-                c.scale(scale, scale);
-                theme.draw(c, (now - start) / 1000f, dt, input);
-                c.restore();
-            } catch (Exception e) {
-                SystemClock.sleep(16);
-            } finally {
-                if (c != null) {
-                    try { h.unlockCanvasAndPost(c); } catch (Exception ignored) { }
+            long frameBudget = limited30 ? frame30 : frame60;
+            long waitNs = nextFrame - System.nanoTime();
+            if (waitNs > 0) {
+                long waitMs = waitNs / 1_000_000L;
+                int waitNanos = (int) (waitNs % 1_000_000L);
+                try {
+                    Thread.sleep(waitMs, waitNanos);
+                } catch (InterruptedException ignored) {
+                    if (!alive) break;
                 }
             }
-            if (Build.VERSION.SDK_INT < 26) SystemClock.sleep(8); // software canvas: give the CPU room
+
+            long nowNs = System.nanoTime();
+            long elapsedNs = Math.max(1L, nowNs - lastFrame);
+            lastFrame = nowNs;
+            float dt = Math.min(0.05f, elapsedNs / 1_000_000_000f);
+            input.step(dt);
+
+            Canvas canvas = null;
+            long renderStart = System.nanoTime();
+            try {
+                if (holder.getSurface().isValid()) {
+                    canvas = Build.VERSION.SDK_INT >= 26
+                            ? holder.lockHardwareCanvas() : holder.lockCanvas();
+                    if (canvas != null) {
+                        canvas.save();
+                        canvas.scale(scale, scale);
+                        Themes.Theme current = theme;
+                        if (current != null) current.draw(canvas,
+                                (nowNs - animationStart) / 1_000_000_000f, dt, input);
+                        canvas.restore();
+                    }
+                }
+            } catch (Exception ignored) {
+                // Surface can be recreated while the TV changes screens or resolution.
+            } finally {
+                if (canvas != null) {
+                    try { holder.unlockCanvasAndPost(canvas); } catch (Exception ignored) { }
+                }
+            }
+
+            long renderNs = Math.max(1L, System.nanoTime() - renderStart);
+            avgRenderNs = (avgRenderNs * 19L + Math.min(renderNs, 100_000_000L)) / 20L;
+            if (++samples >= 120) {
+                if (!limited30 && avgRenderNs > 20_000_000L) slowSamples++;
+                else slowSamples = 0;
+                if (limited30 && avgRenderNs < 12_000_000L) fastSamples++;
+                else fastSamples = 0;
+
+                // Require sustained pressure before changing cadence; avoid oscillation.
+                if (!limited30 && slowSamples >= 3) {
+                    limited30 = true;
+                    fastSamples = 0;
+                } else if (limited30 && fastSamples >= 5) {
+                    limited30 = false;
+                    slowSamples = 0;
+                }
+                samples = 0;
+            }
+
+            frameBudget = limited30 ? frame30 : frame60;
+            nextFrame += frameBudget;
+            long afterDraw = System.nanoTime();
+            if (nextFrame < afterDraw - frameBudget) nextFrame = afterDraw + frameBudget;
         }
     }
 }

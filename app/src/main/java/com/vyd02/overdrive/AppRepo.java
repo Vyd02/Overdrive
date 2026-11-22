@@ -112,8 +112,7 @@ public class AppRepo {
             if (android.os.Build.VERSION.SDK_INT >= 26 && s.getConfig() == android.graphics.Bitmap.Config.HARDWARE)
                 s = s.copy(android.graphics.Bitmap.Config.ARGB_8888, false);
             android.graphics.Bitmap tiny = android.graphics.Bitmap.createScaledBitmap(s, 24, 14, true);
-            android.graphics.Bitmap mid = android.graphics.Bitmap.createScaledBitmap(tiny, 96, 54, true);
-            return android.graphics.Bitmap.createScaledBitmap(mid, 384, 216, true);
+            return android.graphics.Bitmap.createScaledBitmap(tiny, 384, 216, true);
         } catch (Exception e) {
             return null;
         }
