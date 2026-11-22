@@ -28,6 +28,10 @@ public class IntroView extends View {
     private final Paint ring = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint halo = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.DITHER_FLAG);
     private final Path path = new Path();
+    private final android.graphics.Matrix mx = new android.graphics.Matrix();
+    private RadialGradient haloShader;      // built once, then scaled
+    private LinearGradient trailShader, sweepShader;
+    private int shaderAccent;
     private float p; // 0..1
     private ValueAnimator anim;
     private Runnable onDone;
@@ -52,6 +56,7 @@ public class IntroView extends View {
 
     public void play(int accentColor, Runnable done) {
         accent = accentColor;
+        buildShaders();
         onDone = done;
         setVisibility(VISIBLE);
         setAlpha(1f);
@@ -71,6 +76,15 @@ public class IntroView extends View {
     }
 
     public boolean isPlaying() { return getVisibility() == VISIBLE; }
+
+    /** All gradients are made once per play, then only moved and scaled while animating. */
+    private void buildShaders() {
+        if (haloShader != null && shaderAccent == accent) return;
+        shaderAccent = accent;
+        haloShader = new RadialGradient(0, 0, 1f, new int[]{Themes.withA(accent, 110), 0}, null, Shader.TileMode.CLAMP);
+        trailShader = new LinearGradient(0, 0, 1, 0, 0, Themes.withA(accent, 140), Shader.TileMode.CLAMP);
+        sweepShader = new LinearGradient(-1, 0, 1, 0, new int[]{0, Color.argb(170, 255, 255, 255), 0}, null, Shader.TileMode.CLAMP);
+    }
 
     private void finish() {
         setVisibility(GONE);
@@ -99,9 +113,13 @@ public class IntroView extends View {
 
         // soft halo builds behind everything
         float hp = easeOut(seg(p, 0.05f, 0.6f));
-        halo.setShader(new RadialGradient(cx, cy, Math.max(1f, w * 0.45f * hp),
-                new int[]{Themes.withA(accent, (int) (110 * hp * (1 - out))), 0}, null, Shader.TileMode.CLAMP));
-        c.drawCircle(cx, cy, w * 0.45f, halo);
+        float hr = Math.max(1f, w * 0.45f * hp);
+        mx.setScale(hr, hr);
+        mx.postTranslate(cx, cy);
+        haloShader.setLocalMatrix(mx);
+        halo.setShader(haloShader);
+        halo.setAlpha((int) (255 * hp * (1 - out)));
+        c.drawCircle(cx, cy, hr, halo);
 
         // chevrons slide in from the left
         float cp = easeOut(seg(p, 0f, 0.3f));
@@ -123,8 +141,10 @@ public class IntroView extends View {
             c.drawPath(path, chev);
             // motion trail
             if (cp < 1f) {
-                streak.setShader(new LinearGradient(x - size * 4, 0, x, 0, 0, Themes.withA(accent, 140),
-                        Shader.TileMode.CLAMP));
+                mx.setScale(size * 3.8f, 1f);
+                mx.postTranslate(x - size * 4, 0);
+                trailShader.setLocalMatrix(mx);
+                streak.setShader(trailShader);
                 streak.setStrokeWidth(size * 0.08f);
                 c.drawLine(x - size * 4, cy, x - size * 0.2f, cy, streak);
             }
@@ -145,8 +165,10 @@ public class IntroView extends View {
         float sp = seg(p, 0.5f, 0.72f);
         if (sp > 0f && sp < 1f) {
             float sx = cx - textW + sp * textW * 2.2f;
-            streak.setShader(new LinearGradient(sx - 90 * d, 0, sx + 90 * d, 0,
-                    new int[]{0, Color.argb(170, 255, 255, 255), 0}, null, Shader.TileMode.CLAMP));
+            mx.setScale(90 * d, 1f);
+            mx.postTranslate(sx, 0);
+            sweepShader.setLocalMatrix(mx);
+            streak.setShader(sweepShader);
             streak.setStrokeWidth(80 * d);
             c.drawLine(sx - 90 * d, cy, sx + 90 * d, cy, streak);
         }

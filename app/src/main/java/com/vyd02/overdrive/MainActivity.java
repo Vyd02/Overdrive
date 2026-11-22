@@ -178,7 +178,7 @@ public class MainActivity extends Activity {
             content.setAlpha(0f);
             content.setScaleX(1.04f);
             content.setScaleY(1.04f);
-            content.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(380).setInterpolator(EASE).start();
+            content.animate().withLayer().alpha(1f).scaleX(1f).scaleY(1f).setDuration(380).setInterpolator(EASE).start();
         }
         ui.postDelayed(this::autoCheckUpdate, 2500);
     }
@@ -201,8 +201,14 @@ public class MainActivity extends Activity {
 
     private int dp(float v) { return Math.round(v * d); }
 
+    /** TextView that fades without an extra offscreen render pass. */
+    static class FastText extends TextView {
+        FastText(Context c) { super(c); }
+        @Override public boolean hasOverlappingRendering() { return false; }
+    }
+
     private TextView text(float sp, int color, String font, int style) {
-        TextView t = new TextView(this);
+        TextView t = new FastText(this);
         t.setTextSize(sp);
         t.setTextColor(color);
         t.setTypeface(Typeface.create(font, style));
@@ -231,7 +237,7 @@ public class MainActivity extends Activity {
 
     private void buildUi() {
         root = new FrameLayout(this);
-        root.setBackgroundColor(Color.BLACK);
+        getWindow().setBackgroundDrawable(null); // the theme covers the whole screen: skip a full-screen fill every frame
 
         theme = new ThemeView(this, repo.prefs().getString(KEY_THEME, "nebula"));
         root.addView(theme, new FrameLayout.LayoutParams(-1, -1));
@@ -241,14 +247,11 @@ public class MainActivity extends Activity {
         backB = backdrop();
         root.addView(backA, new FrameLayout.LayoutParams(-1, dp(360)));
         root.addView(backB, new FrameLayout.LayoutParams(-1, dp(360)));
-        View shade = new View(this);
+        View shade = new View(this); // single soft shade so the title stays readable over the backdrop
         shade.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
                 new int[]{Color.argb(70, 0, 0, 0), Color.argb(120, 0, 0, 0), Color.argb(0, 0, 0, 0)}));
         root.addView(shade, new FrameLayout.LayoutParams(-1, dp(360)));
-        View shadeL = new View(this);
-        shadeL.setBackground(new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT,
-                new int[]{Color.argb(170, 0, 0, 0), Color.argb(40, 0, 0, 0), Color.argb(0, 0, 0, 0)}));
-        root.addView(shadeL, new FrameLayout.LayoutParams(-1, dp(360)));
+
 
         content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
@@ -364,7 +367,7 @@ public class MainActivity extends Activity {
         heroCard.setFocusableInTouchMode(false);
         heroCard.setClickable(false);
         heroCard.setAlwaysLit();
-        heroCard.setElevation(dp(18));
+
         heroCard.setCameraDistance(8000 * d);
         FrameLayout.LayoutParams clp = new FrameLayout.LayoutParams(dp(240), dp(135), Gravity.END | Gravity.CENTER_VERTICAL);
         clp.rightMargin = dp(56);
@@ -889,11 +892,12 @@ public class MainActivity extends Activity {
         ImageView in = backAOn ? backB : backA;
         ImageView out = backAOn ? backA : backB;
         backAOn = !backAOn;
-        out.animate().alpha(0f).setDuration(420).start();
+        out.animate().alpha(0f).setDuration(420).withEndAction(() -> { if (out.getAlpha() == 0f) out.setVisibility(View.INVISIBLE); }).start();
         if (blur == null) return;
         BitmapDrawable bd = new BitmapDrawable(getResources(), blur);
         bd.setFilterBitmap(true);
         in.setImageDrawable(bd);
+        in.setVisibility(View.VISIBLE);
         in.animate().alpha(0.55f).setDuration(420).setInterpolator(EASE).start();
     }
 
@@ -907,14 +911,14 @@ public class MainActivity extends Activity {
         t.pulse();
         sound.play(Sound.SELECT);
         theme.select();
-        content.animate().alpha(0f).scaleX(1.06f).scaleY(1.06f).setDuration(240)
+        content.animate().withLayer().alpha(0f).scaleX(1.06f).scaleY(1.06f).setDuration(240)
                 .setInterpolator(new AccelerateInterpolator()).start();
         ui.postDelayed(() -> {
             try {
                 startActivity(i);
                 repo.markLaunched(pkg);
             } catch (Exception e) {
-                content.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(200).start();
+                content.animate().withLayer().alpha(1f).scaleX(1f).scaleY(1f).setDuration(200).start();
                 showBanner("Can't open that app");
             }
         }, 230);
@@ -926,7 +930,7 @@ public class MainActivity extends Activity {
         if (hub.isOpen()) return;
         focusBeforeHub = getCurrentFocus();
         content.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
-        content.animate().alpha(0.25f).setDuration(250).start();
+        content.animate().withLayer().alpha(0.25f).setDuration(250).start();
         hub.show();
     }
 
@@ -935,7 +939,7 @@ public class MainActivity extends Activity {
         sound.play(Sound.BACK);
         hub.hide();
         content.setDescendantFocusability(ViewGroup.FOCUS_AFTER_DESCENDANTS);
-        content.animate().alpha(1f).setDuration(250).start();
+        content.animate().withLayer().alpha(1f).setDuration(250).start();
         if (focusBeforeHub != null && focusBeforeHub.isAttachedToWindow()) focusBeforeHub.requestFocus();
         else gear.requestFocus();
     }
@@ -1048,7 +1052,7 @@ public class MainActivity extends Activity {
         intro.play(currentAccent, () -> {
             content.setScaleX(0.96f);
             content.setScaleY(0.96f);
-            content.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(500).setInterpolator(EASE).start();
+            content.animate().withLayer().alpha(1f).scaleX(1f).scaleY(1f).setDuration(500).setInterpolator(EASE).start();
         });
     }
 
@@ -1093,7 +1097,7 @@ public class MainActivity extends Activity {
         saver.setVisibility(View.VISIBLE);
         saver.setAlpha(0f);
         saver.animate().alpha(1f).setDuration(1200).start();
-        content.animate().alpha(0f).setDuration(900).start();
+        content.animate().withLayer().alpha(0f).setDuration(900).start();
         backA.animate().alpha(0f).setDuration(900).start();
         backB.animate().alpha(0f).setDuration(900).start();
         drift();
@@ -1120,7 +1124,7 @@ public class MainActivity extends Activity {
         if (saver.getVisibility() != View.VISIBLE) return false;
         saverBox.animate().cancel();
         saver.animate().alpha(0f).setDuration(300).withEndAction(() -> saver.setVisibility(View.GONE)).start();
-        content.animate().alpha(1f).setDuration(400).start();
+        content.animate().withLayer().alpha(1f).setDuration(400).start();
         (backAOn ? backA : backB).animate().alpha(0.55f).setDuration(400).start();
         return true;
     }
@@ -1535,7 +1539,7 @@ public class MainActivity extends Activity {
             if (first == null || i == want) first = row;
             row.setAlpha(0f);
             row.setTranslationX(dp(30));
-            row.animate().alpha(1f).translationX(0).setStartDelay(70 + i * 40L).setDuration(300).setInterpolator(EASE).start();
+            row.animate().withLayer().alpha(1f).translationX(0).setStartDelay(70 + i * 40L).setDuration(300).setInterpolator(EASE).start();
         }
 
         TextView hint = text(10, C_SUB, "sans-serif", Typeface.NORMAL);

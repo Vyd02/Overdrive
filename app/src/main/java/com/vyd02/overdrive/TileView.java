@@ -103,6 +103,9 @@ public class TileView extends View {
     private boolean lit;
 
     public int getAccent() { return accent; }
+
+    /** Fading a tile never needs an extra offscreen pass. */
+    @Override public boolean hasOverlappingRendering() { return false; }
     public String getLabel() { return label; }
 
     @Override
@@ -153,7 +156,6 @@ public class TileView extends View {
         animateFocus(gained ? 1f : 0f);
         animate().cancel();
         animate().scaleX(gained ? scaleUp : 1f).scaleY(gained ? scaleUp : 1f)
-                .translationZ(gained ? 14 * d : 0)
                 .setInterpolator(gained ? EASE_OUT : EASE_IN_OUT)
                 .setDuration(gained ? 300 : 220).start();
         removeCallbacks(sheenLoop);

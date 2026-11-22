@@ -4,29 +4,47 @@ import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.PixelFormat;
 import android.os.Build;
-import android.os.SystemClock;
+import android.os.Handler;
+import android.os.HandlerThread;
+import android.os.Looper;
+import android.os.Process;
+import android.view.Choreographer;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 
 /**
- * Animated background drawn on its own thread, so the menus never wait on it.
- * Renders at 1280x720 and lets the TV's hardware scaler stretch it for free.
- * Reacts to what you do: moving focus, selecting, and the color of the focused app.
+ * Animated background, drawn on its own thread and locked to the TV's refresh signal (vsync)
+ * the same way the system UI draws. Every frame uses the display's own timestamp, so motion
+ * is perfectly even. If the TV ever struggles, it lowers the background's resolution instead
+ * of dropping frames, so it stays at full frame rate.
  */
-public class ThemeView extends SurfaceView implements SurfaceHolder.Callback {
+public class ThemeView extends SurfaceView implements SurfaceHolder.Callback, Choreographer.FrameCallback {
 
-    static final int RW = 1280, RH = 720;      // the themes' drawing coordinates
-    static final int SW = 960, SH = 540;       // real surface size: 44% fewer pixels, scaled up free by the TV
+    static final int RW = 1280, RH = 720;                       // the themes' drawing coordinates
+    private static final int[][] TIERS = {{960, 540}, {800, 450}, {640, 360}};
 
     private volatile Themes.Theme theme;
     private final Themes.Input input = new Themes.Input();
-    private Thread thread;
+    private final Handler main = new Handler(Looper.getMainLooper());
+
+    private HandlerThread thread;
+    private Handler render;
+    private Choreographer choreo;
     private volatile boolean alive;
+    private volatile int surfW = TIERS[0][0];
+    private int tier = 0;
+
+    // frame timing (render thread only)
+    private long startNs, lastNs;
+    private long vsyncNs = 16_666_667L;
+    private int windowFrames, windowJank, calmFrames;
+    private int sinceUpgrade = Integer.MAX_VALUE / 2;
+    private boolean noMoreUpgrades;
 
     public ThemeView(Context c, String themeId) {
         super(c);
         getHolder().setFormat(PixelFormat.RGBA_8888);
-        getHolder().setFixedSize(SW, SH);
+        getHolder().setFixedSize(TIERS[0][0], TIERS[0][1]);
         getHolder().addCallback(this);
         setTheme(themeId);
     }
@@ -41,7 +59,6 @@ public class ThemeView extends SurfaceView implements SurfaceHolder.Callback {
 
     // ---- interaction, called from the UI thread ----
 
-    /** Focus moved to a tile at (nx, ny) in 0..1 screen space, nudged in direction (dx, dy). */
     public void focusAt(float nx, float ny, int dx, int dy) {
         input.tfx = nx;
         input.tfy = ny;
@@ -53,107 +70,102 @@ public class ThemeView extends SurfaceView implements SurfaceHolder.Callback {
 
     public void setAccent(int color) { input.targetAccent = color; }
 
-    // ---- render loop ----
+    // ---- surface lifecycle ----
 
-    @Override public void surfaceCreated(SurfaceHolder h) { start(); }
-    @Override public void surfaceChanged(SurfaceHolder h, int f, int w, int hh) { }
-    @Override public void surfaceDestroyed(SurfaceHolder h) { stop(); }
-
-    private void start() {
-        if (alive) return;
+    @Override
+    public void surfaceCreated(SurfaceHolder h) {
+        if (getDisplay() != null) {
+            float hz = getDisplay().getRefreshRate();
+            if (hz > 20f) vsyncNs = (long) (1_000_000_000L / hz);
+        }
         alive = true;
-        thread = new Thread(this::loop, "overdrive-theme");
-        thread.setPriority(Thread.NORM_PRIORITY - 1);
+        thread = new HandlerThread("overdrive-theme", Process.THREAD_PRIORITY_DEFAULT);
         thread.start();
+        render = new Handler(thread.getLooper());
+        render.post(() -> {
+            choreo = Choreographer.getInstance(); // bound to this thread's looper
+            lastNs = 0;
+            choreo.postFrameCallback(this);
+        });
     }
 
-    private void stop() {
+    @Override
+    public void surfaceChanged(SurfaceHolder h, int format, int w, int hh) { surfW = w; }
+
+    @Override
+    public void surfaceDestroyed(SurfaceHolder h) {
         alive = false;
+        if (render != null) {
+            render.post(() -> { if (choreo != null) choreo.removeFrameCallback(this); });
+        }
         if (thread != null) {
+            thread.quitSafely();
             try { thread.join(500); } catch (InterruptedException ignored) { }
             thread = null;
         }
     }
 
-    private void loop() {
-        final SurfaceHolder holder = getHolder();
-        final long frame60 = 16_666_667L;
-        final long frame30 = 33_333_333L;
-        long nextFrame = System.nanoTime();
-        final long animationStart = nextFrame;
-        long lastFrame = nextFrame;
-        long avgRenderNs = 4_000_000L;
-        int samples = 0;
-        int slowSamples = 0;
-        int fastSamples = 0;
-        boolean limited30 = false;
-        final float scale = (float) SW / RW;
+    // ---- one frame per vsync ----
 
-        while (alive) {
-            long frameBudget = limited30 ? frame30 : frame60;
-            long waitNs = nextFrame - System.nanoTime();
-            if (waitNs > 0) {
-                long waitMs = waitNs / 1_000_000L;
-                int waitNanos = (int) (waitNs % 1_000_000L);
-                try {
-                    Thread.sleep(waitMs, waitNanos);
-                } catch (InterruptedException ignored) {
-                    if (!alive) break;
-                }
+    @Override
+    public void doFrame(long frameNs) {
+        if (!alive) return;
+        choreo.postFrameCallback(this); // book the next vsync first
+
+        if (lastNs == 0) { lastNs = frameNs; startNs = frameNs; }
+        long interval = frameNs - lastNs;
+        lastNs = frameNs;
+        float dt = Math.min(0.05f, Math.max(0f, interval / 1_000_000_000f));
+        trackSmoothness(interval);
+        input.step(dt);
+
+        SurfaceHolder h = getHolder();
+        Canvas c = null;
+        try {
+            if (!h.getSurface().isValid()) return;
+            c = Build.VERSION.SDK_INT >= 26 ? h.lockHardwareCanvas() : h.lockCanvas();
+            if (c == null) return;
+            float scale = (float) surfW / RW;
+            c.save();
+            c.scale(scale, scale);
+            Themes.Theme t = theme;
+            if (t != null) t.draw(c, (frameNs - startNs) / 1_000_000_000f, dt, input);
+            c.restore();
+        } catch (Exception ignored) {
+            // surface can be swapped out while the TV changes screens
+        } finally {
+            if (c != null) {
+                try { h.unlockCanvasAndPost(c); } catch (Exception ignored) { }
             }
-
-            long nowNs = System.nanoTime();
-            long elapsedNs = Math.max(1L, nowNs - lastFrame);
-            lastFrame = nowNs;
-            float dt = Math.min(0.05f, elapsedNs / 1_000_000_000f);
-            input.step(dt);
-
-            Canvas canvas = null;
-            long renderStart = System.nanoTime();
-            try {
-                if (holder.getSurface().isValid()) {
-                    canvas = Build.VERSION.SDK_INT >= 26
-                            ? holder.lockHardwareCanvas() : holder.lockCanvas();
-                    if (canvas != null) {
-                        canvas.save();
-                        canvas.scale(scale, scale);
-                        Themes.Theme current = theme;
-                        if (current != null) current.draw(canvas,
-                                (nowNs - animationStart) / 1_000_000_000f, dt, input);
-                        canvas.restore();
-                    }
-                }
-            } catch (Exception ignored) {
-                // Surface can be recreated while the TV changes screens or resolution.
-            } finally {
-                if (canvas != null) {
-                    try { holder.unlockCanvasAndPost(canvas); } catch (Exception ignored) { }
-                }
-            }
-
-            long renderNs = Math.max(1L, System.nanoTime() - renderStart);
-            avgRenderNs = (avgRenderNs * 19L + Math.min(renderNs, 100_000_000L)) / 20L;
-            if (++samples >= 120) {
-                if (!limited30 && avgRenderNs > 20_000_000L) slowSamples++;
-                else slowSamples = 0;
-                if (limited30 && avgRenderNs < 12_000_000L) fastSamples++;
-                else fastSamples = 0;
-
-                // Require sustained pressure before changing cadence; avoid oscillation.
-                if (!limited30 && slowSamples >= 3) {
-                    limited30 = true;
-                    fastSamples = 0;
-                } else if (limited30 && fastSamples >= 5) {
-                    limited30 = false;
-                    slowSamples = 0;
-                }
-                samples = 0;
-            }
-
-            frameBudget = limited30 ? frame30 : frame60;
-            nextFrame += frameBudget;
-            long afterDraw = System.nanoTime();
-            if (nextFrame < afterDraw - frameBudget) nextFrame = afterDraw + frameBudget;
         }
+    }
+
+    /** If more than ~8% of frames arrive late, step the background down a size; recover after a long calm. */
+    private void trackSmoothness(long interval) {
+        if (interval <= 0) return;
+        boolean late = interval > vsyncNs * 3 / 2;
+        windowFrames++;
+        if (late) windowJank++;
+        calmFrames = late ? 0 : calmFrames + 1;
+        sinceUpgrade++;
+        if (windowFrames >= 180) {
+            if (windowJank > 14 && tier < TIERS.length - 1) {
+                if (sinceUpgrade < 60 * 15) noMoreUpgrades = true; // sharper size didn't hold: stay put
+                setTier(tier + 1);
+            }
+            windowFrames = 0;
+            windowJank = 0;
+        }
+        if (!noMoreUpgrades && calmFrames > 60 * 30 && tier > 0) { // 30 calm seconds: try the sharper size again
+            calmFrames = 0;
+            sinceUpgrade = 0;
+            setTier(tier - 1);
+        }
+    }
+
+    private void setTier(int t) {
+        tier = t;
+        final int w = TIERS[t][0], hh = TIERS[t][1];
+        main.post(() -> getHolder().setFixedSize(w, hh));
     }
 }

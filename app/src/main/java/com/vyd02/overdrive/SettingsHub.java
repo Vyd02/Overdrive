@@ -292,7 +292,7 @@ public class SettingsHub extends FrameLayout {
         setAlpha(0f);
         setScaleX(1.04f);
         setScaleY(1.04f);
-        animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(320).setInterpolator(EASE).start();
+        animate().withLayer().alpha(1f).scaleX(1f).scaleY(1f).setDuration(320).setInterpolator(EASE).start();
         refreshInfo();
         View target = lastFocus != null ? lastFocus : overdriveRow.getChildAt(0);
         target.post(target::requestFocus);
@@ -300,7 +300,7 @@ public class SettingsHub extends FrameLayout {
 
     void hide() {
         adjustingVolume = false;
-        animate().alpha(0f).scaleX(1.03f).scaleY(1.03f).setDuration(220)
+        animate().withLayer().alpha(0f).scaleX(1.03f).scaleY(1.03f).setDuration(220)
                 .withEndAction(() -> setVisibility(GONE)).start();
     }
 

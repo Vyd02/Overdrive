@@ -93,6 +93,29 @@ final class Themes {
     // Shared pieces
     // ------------------------------------------------------------------
 
+    /** Reused color filters, keyed by a slightly rounded color. Render thread only, so no locking. */
+    private static final java.util.HashMap<Integer, PorterDuffColorFilter> FILTERS = new java.util.HashMap<>();
+
+    static PorterDuffColorFilter tintFilter(int color) {
+        int key = (color & 0xFCFCFC) | 0xFF000000; // round off the lowest bits: ~250k colors max, in practice a few dozen
+        PorterDuffColorFilter f = FILTERS.get(key);
+        if (f == null) {
+            if (FILTERS.size() > 512) FILTERS.clear();
+            f = new PorterDuffColorFilter(key, PorterDuff.Mode.SRC_IN);
+            FILTERS.put(key, f);
+        }
+        return f;
+    }
+
+    private static final float[] HSV = new float[3];
+
+    /** Hue shift without allocating (render thread only). */
+    static int hue(int c, float deg) {
+        Color.colorToHSV(c, HSV);
+        HSV[0] = (HSV[0] + deg + 360f) % 360f;
+        return Color.HSVToColor(HSV);
+    }
+
     /** Soft white glow; recolored with a color filter so one shader serves every color. */
     static final class Glow {
         final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.DITHER_FLAG);
@@ -111,7 +134,7 @@ final class Themes {
             g.setLocalMatrix(m);
             int opaque = color | 0xFF000000;
             if (opaque != lastColor) {
-                p.setColorFilter(new PorterDuffColorFilter(opaque, PorterDuff.Mode.SRC_IN));
+                p.setColorFilter(tintFilter(opaque));
                 lastColor = opaque;
             }
             p.setAlpha(Math.min(255, alpha));
@@ -199,9 +222,9 @@ final class Themes {
             glow.draw(c, w * (0.78f + 0.07f * (float) Math.sin(t * 0.13)) - px * 90, h * (0.22f + 0.1f * (float) Math.cos(t * 0.11)) - py * 50,
                     w * 0.55f * (1 + 0.05f * (float) Math.sin(t * 0.3)), a, 120);
             glow.draw(c, w * (0.16f + 0.1f * (float) Math.cos(t * 0.09)) - px * 60, h * (0.86f + 0.08f * (float) Math.sin(t * 0.12)) - py * 40,
-                    w * 0.45f, BackgroundView.shiftHue(a, 40), 95);
+                    w * 0.45f, hue(a, 40), 95);
             glow.draw(c, w * (0.5f + 0.25f * (float) Math.sin(t * 0.05)) - px * 30, h * (0.5f + 0.15f * (float) Math.sin(t * 0.07)),
-                    w * 0.32f, BackgroundView.shiftHue(a, -55), 70);
+                    w * 0.32f, hue(a, -55), 70);
             // a soft light that follows whatever you're focused on
             glow.draw(c, in.fx * w, in.fy * h, 260 + in.boost * 80, a, (int) (55 + in.boost * 60));
             far.draw(c, w, h, t, px * 30 + in.vx * 6, 0.45f);
@@ -343,7 +366,7 @@ final class Themes {
             speed += (target - speed) * Math.min(1f, dt * 5f);
 
             glow.draw(c, cx, cy, w * 0.5f, in.accent, (int) (60 + 80 * in.boost));
-            glow.draw(c, cx, cy, w * 0.18f, BackgroundView.shiftHue(in.accent, 60), (int) (40 + 60 * in.pulse));
+            glow.draw(c, cx, cy, w * 0.18f, hue(in.accent, 60), (int) (40 + 60 * in.pulse));
 
             float f = w * 0.42f;
             int tint = lerpColor(Color.WHITE, in.accent, 0.25f);
@@ -376,6 +399,8 @@ final class Themes {
         final Paint band = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.DITHER_FLAG);
         final Paint mtn = new Paint(Paint.ANTI_ALIAS_FLAG), mtn2 = new Paint(Paint.ANTI_ALIAS_FLAG);
         final Path path = new Path();
+        final Matrix bm = new Matrix();
+        Shader bandShader;
         Path hills, hills2; Stars stars; Glow glow;
         float wind;
         static final int[] BASE = {0xFF3DFFB0, 0xFF2EE6E6, 0xFFA35CFF};
@@ -388,6 +413,10 @@ final class Themes {
             mtn2.setColor(0xFF02050A);
             stars = new Stars(rnd, 110, 0.8f);
             glow = new Glow(0.4f, 80);
+            // unit-height white curtain: bright edge at 0, fading out by 1
+            bandShader = new LinearGradient(0, 0, 0, 1, new int[]{0xFFFFFFFF, 0x66FFFFFF, 0x00FFFFFF},
+                    new float[]{0f, 0.35f, 1f}, Shader.TileMode.CLAMP);
+            band.setShader(bandShader);
         }
 
         void draw(Canvas c, float t, float dt, Input in) {
@@ -416,9 +445,12 @@ final class Themes {
                     path.lineTo(xx, yy);
                 }
                 path.close();
-                band.setShader(vGrad(baseY + amp, baseY - height - amp,
-                        new int[]{withA(col, (int) Math.min(255, 150 * bright)), withA(col, (int) (60 * bright)), 0},
-                        new float[]{0f, 0.35f, 1f}));
+                float y0 = baseY + amp, y1 = baseY - height - amp;
+                bm.setScale(1f, y1 - y0);
+                bm.postTranslate(0, y0);
+                bandShader.setLocalMatrix(bm);
+                band.setColorFilter(tintFilter(col));
+                band.setAlpha((int) Math.min(255, 150 * bright));
                 c.drawPath(path, band);
             }
             glow.draw(c, in.fx * w, in.fy * h, 240, in.accent, (int) (35 + 50 * in.boost));
