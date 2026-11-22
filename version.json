@@ -1,6 +1,6 @@
 {
-  "versionCode": 14,
-  "versionName": "2.3.0",
-  "apk": "dist/Overdrive-14.apk",
-  "notes": "HD pass: themes draw at full 1080p with glowing light, tiles get a premium gloss and fine edges, the spotlight card stays sharp."
+  "versionCode": 15,
+  "versionName": "2.3.1",
+  "apk": "dist/Overdrive-15.apk",
+  "notes": "Fix: rows no longer slide over the title area. Same fix for Settings and Search."
 }

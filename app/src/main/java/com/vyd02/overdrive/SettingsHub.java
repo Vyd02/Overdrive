@@ -129,6 +129,7 @@ public class SettingsHub extends FrameLayout {
         right.setOrientation(LinearLayout.VERTICAL);
         right.setPadding(dp(28), dp(44), dp(48), 0);
         noClip(right);
+        right.setClipChildren(true); // the options list can't scroll up over the title
         cols.addView(right, new LinearLayout.LayoutParams(0, -1, 1f));
         paneTitle = Ui.text(c, 24, Ui.TEXT, Ui.display(c, 500));
         right.addView(paneTitle);

@@ -98,6 +98,7 @@ public class SearchOverlay extends FrameLayout {
         right.setOrientation(LinearLayout.VERTICAL);
         right.setPadding(dp(36), dp(6), 0, 0);
         noClip(right);
+        right.setClipChildren(true); // results can't scroll up over their heading
         cols.addView(right, new LinearLayout.LayoutParams(0, -1, 1f));
         resultsLabel = Ui.text(c, 12, Ui.SUB, Ui.body(c, true));
         resultsLabel.setLetterSpacing(0.2f);

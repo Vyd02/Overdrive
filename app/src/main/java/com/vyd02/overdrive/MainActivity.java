@@ -272,12 +272,18 @@ public class MainActivity extends Activity {
         scroll = new RowScroller(this);
         scroll.setVerticalScrollBarEnabled(false);
         scroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        // Rows are cut off cleanly at the top of their area so nothing slides over the title.
+        // Android only clips to the box when the box has padding, so give it a 1px top padding.
         scroll.setClipChildren(true);
         scroll.setClipToPadding(true);
-        content.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1f));
+        scroll.setPadding(0, 1, 0, 0);
+        // full screen width (tiles still slide off the left edge), with the rows' inset moved inside
+        LinearLayout.LayoutParams scl = new LinearLayout.LayoutParams(-1, 0, 1f);
+        scl.leftMargin = -dp(56);
+        content.addView(scroll, scl);
         rowsBox = new LinearLayout(this);
         rowsBox.setOrientation(LinearLayout.VERTICAL);
-        rowsBox.setPadding(0, dp(ROW_GAP), 0, dp(320));
+        rowsBox.setPadding(dp(56), dp(ROW_GAP), 0, dp(320));
         noClip(rowsBox);
         scroll.addView(rowsBox, new ScrollView.LayoutParams(-1, -2));
 
