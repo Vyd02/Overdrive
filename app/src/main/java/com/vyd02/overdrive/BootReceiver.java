@@ -13,6 +13,7 @@ public class BootReceiver extends BroadcastReceiver {
     public void onReceive(Context c, Intent intent) {
         String a = intent.getAction();
         boolean update = Intent.ACTION_MY_PACKAGE_REPLACED.equals(a);
+        WakeService.start(c); // stay ready for the next time the TV wakes up
         if (!update && !c.getSharedPreferences("overdrive", Context.MODE_PRIVATE).getBoolean(KEY_OPEN_ON_START, true)) return;
         open(c);
     }

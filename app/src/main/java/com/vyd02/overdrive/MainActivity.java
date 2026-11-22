@@ -69,6 +69,7 @@ public class MainActivity extends Activity {
     private static final String KEY_THEME = "theme";
     private static final String KEY_INTRO = "intro_on";
     private static final String KEY_SAVER = "saver_minutes";
+    private static final int ROW_TOP_GAP = 14; // room for the focused tile to grow without being clipped
     private static final PathInterpolator EASE = new PathInterpolator(0.2f, 0.8f, 0.2f, 1f);
 
     private final Handler ui = new Handler(Looper.getMainLooper());
@@ -88,7 +89,8 @@ public class MainActivity extends Activity {
     private TileView heroCard;
     private RowScroller scroll;
     private LinearLayout rowsBox;
-    private TextView clockTime, clockAmPm, clockDate;
+    private TextView clockTime, clockDate;
+    private String lastClock = "";
     private TextView weatherIcon, weatherTemp, weatherPlace;
     private FrameLayout gear;
     private View updateDot;
@@ -97,6 +99,7 @@ public class MainActivity extends Activity {
     private View scrim;
     private TextView banner;
     private IntroView intro;
+    private SettingsHub hub;
     private FrameLayout saver;
     private LinearLayout saverBox;
     private TextView saverTime, saverDate, saverWeather;
@@ -117,6 +120,8 @@ public class MainActivity extends Activity {
     private long lastInteraction = System.currentTimeMillis();
     private String lastWeatherLine = "";
     private final Map<String, TileView> tileByKey = new HashMap<>();
+    private View litRow;
+    private Map<String, String> catCache = new HashMap<>();
 
     // =====================================================================
     // Lifecycle
@@ -137,6 +142,7 @@ public class MainActivity extends Activity {
         refreshWeather();
         ui.postDelayed(this::maybePromptGuard, 3200);
         ui.postDelayed(saverCheck, 15000);
+        if (repo.prefs().getBoolean(BootReceiver.KEY_OPEN_ON_START, true)) WakeService.start(this);
 
         boolean introOn = repo.prefs().getBoolean(KEY_INTRO, true);
         if (introOn) playIntro(); else content.setAlpha(1f);
@@ -181,6 +187,7 @@ public class MainActivity extends Activity {
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         if (overlay.getVisibility() == View.VISIBLE) closePanel(false);
+        if (hub.isOpen()) closeSettings();
         hideSaver();
         endMove();
         if (intent.getBooleanExtra(EXTRA_INTRO, false) && repo.prefs().getBoolean(KEY_INTRO, true)) playIntro();
@@ -199,7 +206,7 @@ public class MainActivity extends Activity {
         t.setTextSize(sp);
         t.setTextColor(color);
         t.setTypeface(Typeface.create(font, style));
-        t.setIncludeFontPadding(false);
+        t.setIncludeFontPadding(true); // full glyph height: nothing gets its top shaved off
         return t;
     }
 
@@ -260,15 +267,34 @@ public class MainActivity extends Activity {
         scroll.setVerticalScrollBarEnabled(false);
         scroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
         scroll.setSmoothScrollingEnabled(true);
-        noClip(scroll);
+        // rows must be clipped to their own area, otherwise rows that scroll up slide under the title
+        scroll.setClipChildren(true);
+        scroll.setClipToPadding(true);
         content.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1f));
         rowsBox = new LinearLayout(this);
         rowsBox.setOrientation(LinearLayout.VERTICAL);
-        rowsBox.setPadding(0, dp(4), 0, dp(300));
+        rowsBox.setPadding(0, dp(ROW_TOP_GAP), 0, dp(300));
         noClip(rowsBox);
         scroll.addView(rowsBox, new ScrollView.LayoutParams(-1, -2));
 
         buildSaver();
+
+        hub = new SettingsHub(this, new SettingsHub.Host() {
+            @Override public void play(int snd) { sound.play(snd); }
+            @Override public void tileFocused(TileView t, String title, String sub, int accent) {
+                int[] loc = new int[2];
+                t.getLocationOnScreen(loc);
+                theme.focusAt((loc[0] + t.getWidth() / 2f) / Math.max(1, root.getWidth()),
+                        (loc[1] + t.getHeight() / 2f) / Math.max(1, root.getHeight()), lastDx, lastDy);
+                theme.setAccent(accent);
+                currentAccent = accent;
+                lastDx = 0; lastDy = 0;
+            }
+            @Override public void openOverdrive(String which) { openOverdriveSetting(which); }
+            @Override public void banner(String msg) { showBanner(msg); }
+            @Override public void closeHub() { closeSettings(); }
+        });
+        root.addView(hub, new FrameLayout.LayoutParams(-1, -1));
 
         // menus
         overlay = new FrameLayout(this);
@@ -315,7 +341,7 @@ public class MainActivity extends Activity {
         heroName = text(32, C_TEXT, "sans-serif", Typeface.BOLD);
         heroName.setSingleLine(true);
         heroName.setEllipsize(TextUtils.TruncateAt.END);
-        heroName.setShadowLayer(dp(14), 0, dp(2), Color.argb(180, 0, 0, 0));
+        heroName.setShadowLayer(dp(6), 0, dp(2), Color.argb(170, 0, 0, 0));
         left.addView(heroName, new LinearLayout.LayoutParams(-1, -2));
         heroTag = text(10.5f, C_ACCENT, "sans-serif-medium", Typeface.NORMAL);
         heroTag.setLetterSpacing(0.22f);
@@ -395,18 +421,16 @@ public class MainActivity extends Activity {
         LinearLayout ccol = new LinearLayout(this);
         ccol.setOrientation(LinearLayout.VERTICAL);
         ccol.setGravity(Gravity.END);
-        LinearLayout trow = new LinearLayout(this);
-        trow.setOrientation(LinearLayout.HORIZONTAL);
-        trow.setGravity(Gravity.BOTTOM);
+        // one single-line text for "10:01 PM" so nothing can get squeezed or cut off
         clockTime = text(26, C_TEXT, "sans-serif-light", Typeface.NORMAL);
-        clockAmPm = text(11, C_SUB, "sans-serif-medium", Typeface.NORMAL);
-        clockAmPm.setPadding(dp(4), 0, 0, dp(3));
-        trow.addView(clockTime);
-        trow.addView(clockAmPm);
-        ccol.addView(trow);
+        clockTime.setIncludeFontPadding(true);
+        clockTime.setSingleLine(true);
+        clockTime.setGravity(Gravity.END);
+        ccol.addView(clockTime, new LinearLayout.LayoutParams(-2, -2));
         clockDate = text(9.5f, C_SUB, "sans-serif", Typeface.NORMAL);
+        clockDate.setSingleLine(true);
         LinearLayout.LayoutParams cdl = new LinearLayout.LayoutParams(-2, -2);
-        cdl.topMargin = dp(3);
+        cdl.topMargin = dp(1);
         cdl.gravity = Gravity.END;
         ccol.addView(clockDate, cdl);
         bar.addView(ccol);
@@ -440,11 +464,11 @@ public class MainActivity extends Activity {
             v.animate().scaleX(has ? 1.18f : 1f).scaleY(has ? 1.18f : 1f).rotation(has ? 60 : 0)
                     .setInterpolator(new OvershootInterpolator(2f)).setDuration(300).start();
             if (has) {
-                setHero("Menu", "THEMES  ·  SOUNDS  ·  SCREENSAVER  ·  UPDATES", "Press OK to open", Color.WHITE, null, null);
+                setHero("Settings", "OVERDRIVE  ·  FIRE TV  ·  VOLUME", "Press OK to open", Color.WHITE, null, null);
                 theme.focusAt(0.95f, 0.08f, lastDx, lastDy);
             }
         });
-        gear.setOnClickListener(v -> { sound.play(Sound.OPEN); showMainMenu(); });
+        gear.setOnClickListener(v -> { sound.play(Sound.OPEN); openSettings(); });
         return bar;
     }
 
@@ -487,6 +511,8 @@ public class MainActivity extends Activity {
 
         rowsBox.removeAllViews();
         tileByKey.clear();
+        litRow = null;
+        catCache = catOf;
         Set<String> hidden = repo.hidden();
         List<AppRepo.App> visible = new ArrayList<>();
         for (AppRepo.App a : allApps) if (!hidden.contains(a.pkg)) visible.add(a);
@@ -749,7 +775,7 @@ public class MainActivity extends Activity {
             t.pulse();
             sound.play(Sound.SELECT);
             theme.select();
-            openSettings(action);
+            if ("gear".equals(icon)) openSettings(); else openSettings(action);
         });
         placeTile(strip, t, 150, 84, idx);
         return idx + 1;
@@ -757,7 +783,7 @@ public class MainActivity extends Activity {
 
     private String metaFor(AppRepo.App a) {
         long t = repo.lastOpened(a.pkg);
-        String cat = cats.of(a.pkg);
+        String cat = catCache.containsKey(a.pkg) ? catCache.get(a.pkg) : Categories.APPS;
         if (t == 0) return cat;
         long mins = (System.currentTimeMillis() - t) / 60000;
         String ago;
@@ -783,16 +809,22 @@ public class MainActivity extends Activity {
         View strip = (View) t.getParent();
         Strip hs = (Strip) strip.getParent();
         View row = (View) hs.getParent();
-        scroll.smoothScrollTo(0, Math.max(0, row.getTop() - dp(4)));
-        int target = Math.max(0, t.getLeft() - dp(200));
-        hs.smoothScrollTo(target, 0);
-        // light up this row's label, dim the rest
-        for (int i = 0; i < rowsBox.getChildCount(); i++) {
-            View r = rowsBox.getChildAt(i);
-            View label = r.findViewWithTag("label");
-            boolean on = r == row;
-            if (label != null) label.animate().alpha(on ? 1f : 0.5f).setDuration(200).start();
-            r.animate().alpha(on ? 1f : 0.82f).setDuration(250).start();
+        int wantY = Math.max(0, row.getTop() - dp(ROW_TOP_GAP));
+        if (Math.abs(scroll.getScrollY() - wantY) > 2) scroll.smoothScrollTo(0, wantY);
+        // only slide the row when the tile gets near an edge (fewer things moving = calmer, smoother)
+        int sx = hs.getScrollX(), vw = hs.getWidth();
+        int leftEdge = sx + dp(40), rightEdge = sx + vw - dp(260);
+        if (t.getLeft() < leftEdge) hs.smoothScrollTo(Math.max(0, t.getLeft() - dp(40)), 0);
+        else if (t.getRight() > rightEdge) hs.smoothScrollTo(t.getRight() - vw + dp(260), 0);
+        // light up this row's label (only touch the two rows that changed)
+        if (row != litRow) {
+            if (litRow != null) {
+                View old = litRow.findViewWithTag("label");
+                if (old != null) old.animate().alpha(0.5f).setDuration(200).start();
+            }
+            View label = row.findViewWithTag("label");
+            if (label != null) label.animate().alpha(1f).setDuration(200).start();
+            litRow = row;
         }
     }
 
@@ -837,27 +869,32 @@ public class MainActivity extends Activity {
             heroCard.setVisibility(View.VISIBLE);
             heroCard.setAlpha(0f);
             heroCard.setTranslationX(dp(40));
-            heroCard.setRotationY(-14f);
-            heroCard.animate().alpha(1f).translationX(0).rotationY(0).setDuration(380).setInterpolator(EASE).start();
+            heroCard.animate().alpha(1f).translationX(0).setDuration(260).setInterpolator(EASE).start();
         } else if (card == null) {
             heroCard.animate().alpha(0f).setDuration(200).start();
         }
 
-        if (changed) crossfadeBackdrop(blur);
+        if (changed) {
+            // wait until you settle on a tile so fast scrolling doesn't thrash the big backdrop
+            pendingBlur = blur;
+            ui.removeCallbacks(backdropRunner);
+            ui.postDelayed(backdropRunner, 160);
+        }
     }
+
+    private Bitmap pendingBlur;
+    private final Runnable backdropRunner = () -> crossfadeBackdrop(pendingBlur);
 
     private void crossfadeBackdrop(Bitmap blur) {
         ImageView in = backAOn ? backB : backA;
         ImageView out = backAOn ? backA : backB;
         backAOn = !backAOn;
-        out.animate().alpha(0f).setDuration(450).start();
+        out.animate().alpha(0f).setDuration(420).start();
         if (blur == null) return;
         BitmapDrawable bd = new BitmapDrawable(getResources(), blur);
         bd.setFilterBitmap(true);
         in.setImageDrawable(bd);
-        in.setScaleX(1.12f);
-        in.setScaleY(1.12f);
-        in.animate().alpha(0.55f).scaleX(1.0f).scaleY(1.0f).setDuration(1400).setInterpolator(EASE).start();
+        in.animate().alpha(0.55f).setDuration(420).setInterpolator(EASE).start();
     }
 
     // =====================================================================
@@ -881,6 +918,99 @@ public class MainActivity extends Activity {
                 showBanner("Can't open that app");
             }
         }, 230);
+    }
+
+    private View focusBeforeHub;
+
+    private void openSettings() {
+        if (hub.isOpen()) return;
+        focusBeforeHub = getCurrentFocus();
+        content.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
+        content.animate().alpha(0.25f).setDuration(250).start();
+        hub.show();
+    }
+
+    private void closeSettings() {
+        if (!hub.isOpen()) return;
+        sound.play(Sound.BACK);
+        hub.hide();
+        content.setDescendantFocusability(ViewGroup.FOCUS_AFTER_DESCENDANTS);
+        content.animate().alpha(1f).setDuration(250).start();
+        if (focusBeforeHub != null && focusBeforeHub.isAttachedToWindow()) focusBeforeHub.requestFocus();
+        else gear.requestFocus();
+    }
+
+    private void openOverdriveSetting(String which) {
+        switch (which) {
+            case "themes": showThemes(); break;
+            case "sounds": showSoundsPanel(); break;
+            case "saver": showSaverPanel(); break;
+            case "power": showPowerPanel(); break;
+            case "hidden": showHiddenApps(); break;
+            case "weather": showWeatherPanel(); break;
+            default: manualUpdateCheck();
+        }
+    }
+
+    private void showSoundsPanel() {
+        boolean on = sound.on();
+        List<Item> items = new ArrayList<>();
+        items.add(new Item(on ? "Turn sounds off" : "Turn sounds on", on ? "Clicks, chimes and whooshes are on" : "Sounds are muted", () -> {
+            repo.prefs().edit().putBoolean(Sound.KEY_SOUNDS, !on).apply();
+            if (!on) sound.play(Sound.SELECT);
+            showSoundsPanel();
+        }));
+        showPanel("Sounds", "Console-style sounds as you move and select", items, null);
+    }
+
+    private void showSaverPanel() {
+        int cur = repo.prefs().getInt(KEY_SAVER, 3);
+        int[] opts = {2, 3, 5, 10, 0};
+        List<Item> items = new ArrayList<>();
+        for (int i = 0; i < opts.length; i++) {
+            final int m = opts[i];
+            if (m == cur) panelFocusIndex = i;
+            items.add(new Item((m == 0 ? "Off" : "After " + m + " minutes") + (m == cur ? "  ✓" : ""), null, () -> {
+                repo.prefs().edit().putInt(KEY_SAVER, m).apply();
+                showBanner(m == 0 ? "Screensaver off" : "Screensaver after " + m + " min");
+                closePanel(true);
+            }));
+        }
+        items.add(new Item("Preview now", "Any button brings you back", () -> { closePanel(false); closeSettings(); ui.postDelayed(this::showSaver, 400); }));
+        showPanel("Screensaver", "Big clock and weather over your theme when the TV sits idle", items, null);
+    }
+
+    private void showPowerPanel() {
+        boolean openOnStart = repo.prefs().getBoolean(BootReceiver.KEY_OPEN_ON_START, true);
+        boolean introOn = repo.prefs().getBoolean(KEY_INTRO, true);
+        boolean ready = WakeService.canLaunchFromBackground(this);
+        List<Item> items = new ArrayList<>();
+        items.add(new Item("Open when TV turns on", openOnStart ? "On" : "Off", () -> {
+            repo.prefs().edit().putBoolean(BootReceiver.KEY_OPEN_ON_START, !openOnStart).apply();
+            if (!openOnStart) WakeService.start(this);
+            showPowerPanel();
+        }));
+        items.add(new Item("Startup intro", introOn ? "On" : "Off", () -> {
+            repo.prefs().edit().putBoolean(KEY_INTRO, !introOn).apply();
+            showPowerPanel();
+        }));
+        boolean guardOn = HomeGuardService.isEnabled(this);
+        items.add(new Item("Back & Home guard", guardOn ? "On  ·  fastest and most reliable" : "Off  ·  set up once from your phone", this::showGuardPanel));
+        if (!ready) {
+            items.add(new Item("Allow display over other apps", "Lets Overdrive open itself at power-up", () -> {
+                try {
+                    startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                            Uri.parse("package:" + getPackageName())).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+                } catch (Exception e) {
+                    showGuardPanel(); // Fire TV hides this screen; the phone setup covers it
+                }
+            }));
+        }
+        items.add(new Item("Try it", "Shows the intro the way power-up will", () -> { closePanel(false); closeSettings(); playIntro(); }));
+        showPanel("Power-up", ready
+                ? "Ready. Overdrive opens by itself when the TV turns on or wakes up, so you don't need the Launch on Boot app."
+                : "Overdrive opens itself after a restart. To also open when the TV wakes from standby, finish the one-time phone setup in Back & Home guard.",
+                items, null);
     }
 
     private void openSettings(String action) {
@@ -929,6 +1059,8 @@ public class MainActivity extends Activity {
         saverBox.setOrientation(LinearLayout.VERTICAL);
         saverBox.setGravity(Gravity.CENTER_HORIZONTAL);
         saverTime = text(96, C_TEXT, "sans-serif-thin", Typeface.NORMAL);
+        saverTime.setIncludeFontPadding(true);
+        saverTime.setSingleLine(true);
         saverTime.setShadowLayer(dp(20), 0, 0, Color.argb(160, 0, 0, 0));
         saverDate = text(18, Color.argb(220, 255, 255, 255), "sans-serif-light", Typeface.NORMAL);
         saverDate.setLetterSpacing(0.08f);
@@ -948,7 +1080,7 @@ public class MainActivity extends Activity {
         @Override public void run() {
             int mins = repo.prefs().getInt(KEY_SAVER, 3);
             if (mins > 0 && saver.getVisibility() != View.VISIBLE && hasWindowFocus()
-                    && overlay.getVisibility() != View.VISIBLE && !intro.isPlaying()
+                    && overlay.getVisibility() != View.VISIBLE && !intro.isPlaying() && !hub.isOpen()
                     && System.currentTimeMillis() - lastInteraction > mins * 60_000L) {
                 showSaver();
             }
@@ -1005,18 +1137,22 @@ public class MainActivity extends Activity {
         Runnable tick = new Runnable() {
             @Override public void run() {
                 Date now = new Date();
-                String t = fTime.format(now);
-                if (!t.contentEquals(clockTime.getText())) {
-                    if (clockTime.getText().length() > 0) {
-                        clockTime.setAlpha(0.2f);
-                        clockTime.setTranslationY(-dp(6));
-                        clockTime.animate().alpha(1f).translationY(0).setDuration(350).start();
+                String t = fTime.format(now), ap = fAmPm.format(now);
+                String key = t + ap;
+                if (!key.equals(lastClock)) {
+                    boolean animate = !lastClock.isEmpty();
+                    lastClock = key;
+                    android.text.SpannableString sp = new android.text.SpannableString(t + " " + ap);
+                    sp.setSpan(new android.text.style.RelativeSizeSpan(0.42f), t.length(), sp.length(), 0);
+                    sp.setSpan(new android.text.style.ForegroundColorSpan(C_SUB), t.length(), sp.length(), 0);
+                    clockTime.setText(sp);
+                    if (animate) {
+                        clockTime.setAlpha(0.3f);
+                        clockTime.animate().alpha(1f).setDuration(400).start();
                     }
-                    clockTime.setText(t);
                     if (saver.getVisibility() == View.VISIBLE) saverTime.setText(t);
                 }
-                String ap = fAmPm.format(now), dt = fDate.format(now);
-                if (!ap.contentEquals(clockAmPm.getText())) clockAmPm.setText(ap);
+                String dt = fDate.format(now);
                 if (!dt.contentEquals(clockDate.getText())) clockDate.setText(dt);
                 ui.postDelayed(this, 1000);
             }
@@ -1268,7 +1404,8 @@ public class MainActivity extends Activity {
                             + "2. My Fire TV → About → Network: note the IP address\n"
                             + "3. On your phone, open an ADB app, connect to that IP, allow it on the TV\n"
                             + "4. Run:\nsettings put secure enabled_accessibility_services com.vyd02.overdrive/com.vyd02.overdrive.HomeGuardService\n"
-                            + "settings put secure accessibility_enabled 1",
+                            + "settings put secure accessibility_enabled 1\n"
+                            + "appops set com.vyd02.overdrive SYSTEM_ALERT_WINDOW allow",
                     items, null);
         } else {
             items.add(new Item(on ? "Turn off" : "Turn on", on ? "Let Amazon's home stay open" : "Always come back to Overdrive", () -> {
@@ -1341,6 +1478,7 @@ public class MainActivity extends Activity {
         if (!wasOpen) {
             focusBeforePanel = getCurrentFocus();
             content.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
+            hub.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
         } else if (panelOnClose != null) {
             Runnable r = panelOnClose;
             panelOnClose = null;
@@ -1459,7 +1597,8 @@ public class MainActivity extends Activity {
         if (panelOnClose != null) { Runnable r = panelOnClose; panelOnClose = null; r.run(); }
         Runnable done = () -> {
             overlay.setVisibility(View.GONE);
-            content.setDescendantFocusability(ViewGroup.FOCUS_AFTER_DESCENDANTS);
+            hub.setDescendantFocusability(ViewGroup.FOCUS_AFTER_DESCENDANTS);
+            if (!hub.isOpen()) content.setDescendantFocusability(ViewGroup.FOCUS_AFTER_DESCENDANTS);
             if (focusBeforePanel != null && focusBeforePanel.isAttachedToWindow()) focusBeforePanel.requestFocus();
             else focusFirstTile();
         };
@@ -1607,6 +1746,15 @@ public class MainActivity extends Activity {
                         || code == KeyEvent.KEYCODE_BACK) endMove();
             }
             return true;
+        }
+
+        if (hub.isOpen() && overlay.getVisibility() != View.VISIBLE) {
+            if (hub.handleKey(event)) return true;
+            if (code == KeyEvent.KEYCODE_BACK) {
+                if (up && !event.isCanceled()) closeSettings();
+                return true;
+            }
+            if (code == KeyEvent.KEYCODE_MENU) return true;
         }
 
         if (code == KeyEvent.KEYCODE_BACK) {

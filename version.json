@@ -1,6 +1,6 @@
 {
-  "versionCode": 7,
-  "versionName": "1.2.0",
-  "apk": "dist/Overdrive-7.apk",
-  "notes": "Big upgrade: 6 interactive themes, PS5-style spotlight, console sounds, startup intro, screensaver, favorites you can reorder, auto categories, HDMI inputs and quick settings."
+  "versionCode": 8,
+  "versionName": "1.3.0",
+  "apk": "dist/Overdrive-8.apk",
+  "notes": "Custom Settings screen with live info and volume, built-in launch on boot, fixed clock, rows no longer slide under the title, smoother theme rendering."
 }
