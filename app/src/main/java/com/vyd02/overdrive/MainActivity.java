@@ -195,6 +195,37 @@ public class MainActivity extends Activity {
         @Override public void onReceive(Context c, Intent i) { reloadApps(false); }
     };
 
+    // While another app is in front (Netflix, YouTube...), Sora lets go of its big pieces (the
+    // full-HD theme picture and the sound effects) so the TV's memory stays free for the app you're
+    // watching and for Fire TV's own services, like Alexa's playback controls. They come back
+    // the moment you return home.
+    private boolean slimmedDown;
+
+    @Override
+    protected void onStop() {
+        super.onStop();
+        if (crashMode || bgPhoto == null || isChangingConfigurations()) return;
+        slimmedDown = true;
+        bgPhoto.setImageDrawable(null);
+        photoFor = null;
+        if (sound != null) sound.release();
+    }
+
+    @Override
+    protected void onStart() {
+        super.onStart();
+        if (crashMode || !slimmedDown || bgPhoto == null) return;
+        slimmedDown = false;
+        if (sound != null) sound.wake();
+        applyTheme(theme.themeId());
+    }
+
+    @Override
+    public void onTrimMemory(int level) {
+        super.onTrimMemory(level);
+        if (level >= TRIM_MEMORY_BACKGROUND && bgPhoto != null && slimmedDown) bgPhoto.setImageDrawable(null);
+    }
+
     @Override
     protected void onDestroy() {
         super.onDestroy();

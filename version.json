@@ -1,6 +1,6 @@
 {
-  "versionCode": 23,
-  "versionName": "2.6.0",
-  "apk": "dist/Overdrive-23.apk",
-  "notes": "Smooth 60 FPS everywhere, crash fix, 5 new 3D-rendered scene themes (Sakura Night, Neon Rain, Victorian Library, Gothic Cathedral, Firefly Forest), no more Amazon screensaver over Sora, cleaner backgrounds."
+  "versionCode": 24,
+  "versionName": "2.6.1",
+  "apk": "dist/Overdrive-24.apk",
+  "notes": "Sora frees its theme picture and sounds while you're watching an app, leaving memory for the app and Fire TV's own services (like Alexa's playback controls)."
 }
